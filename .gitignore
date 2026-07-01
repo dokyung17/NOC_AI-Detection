@@ -1,0 +1,9 @@
+results/
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+
+# Dataset (local only — do not push to GitHub)
+#data/videos/

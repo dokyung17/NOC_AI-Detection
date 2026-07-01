@@ -1,0 +1,26 @@
+# Core
+numpy>=1.23
+opencv-python>=4.8
+pandas>=2.0
+scipy>=1.10
+Pillow>=9.0
+numba>=0.56
+
+# pyVHR face landmarks — Solutions API (mp.solutions.face_mesh) removed in 0.10.30+
+# PyPI on Python 3.13 only ships 0.10.30+ → use Python 3.9–3.12 (see README)
+mediapipe>=0.10.9,<0.10.30; python_version < "3.13"
+
+# D3 / visual
+torch>=2.0
+torchvision>=0.15
+timm>=0.9
+transformers>=4.30
+albumentations>=1.3
+
+# pyVHR (rPPG)
+plotly>=5.22
+lmfit>=1.2
+scikit-learn>=1.3
+
+# Utilities
+tqdm>=4.60
