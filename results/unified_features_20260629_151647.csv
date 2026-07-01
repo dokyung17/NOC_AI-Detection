@@ -1,0 +1,2 @@
+﻿video_name,video_path,label,success,absdiff_std,bvp_std,d3_temporal_score,highfreq_score,patch_corr_mean,patch_signal_std_mean,pseudo_snr_db
+subject1.mp4,/Users/MacBook/Dropbox/Mac/Desktop/NOC_AI-Detection/data/subject1.mp4,,True,0.005394827975951811,0.022515438683961674,0.6565817594528198,0.4115403890609741,0.17371579343119142,0.07113731939377065,-7.744809294597655

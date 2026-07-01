@@ -1,4 +1,4 @@
-results/
+
 __pycache__/
 *.pyc
 .DS_Store
@@ -6,4 +6,4 @@ __pycache__/
 venv/
 
 # Dataset (local only — do not push to GitHub)
-#data/videos/
+data/videos/
