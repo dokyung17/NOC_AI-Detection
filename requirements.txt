@@ -1,26 +1,40 @@
-# Core
-numpy>=1.23
-opencv-python>=4.8
-pandas>=2.0
-scipy>=1.10
-Pillow>=9.0
-numba>=0.56
+# NOC_AI-Detection dependencies
+# Recommended Python: 3.10–3.12
+#
+# Install:
+#   python -m pip install --upgrade pip
+#   pip install -r requirements.txt
+#
+# NVIDIA GPU users:
+# Install a CUDA-enabled PyTorch build that matches your driver/environment
+# before installing this file. See the PyTorch official installation selector.
+# A plain `pip install torch` may install a CPU-only or platform-default build.
 
-# pyVHR face landmarks — Solutions API (mp.solutions.face_mesh) removed in 0.10.30+
-# PyPI on Python 3.13 only ships 0.10.30+ → use Python 3.9–3.12 (see README)
+# Core numerical and video processing
+numpy>=1.23,<2.1
+scipy>=1.10,<2.0
+pandas>=2.0,<3.0
+opencv-python>=4.8,<5.0
+Pillow>=9.0,<12.0
+numba>=0.57,<1.0
+
+# pyVHR face landmark detection
+# pyVHR uses MediaPipe's legacy Solutions API (`mp.solutions.face_mesh`).
+# MediaPipe 0.10.30+ removes that API.
+# Python 3.13 is therefore not supported by this project.
 mediapipe>=0.10.9,<0.10.30; python_version < "3.13"
 
-# D3 / visual
+# D3 visual feature extraction
 torch>=2.0
 torchvision>=0.15
-timm>=0.9
-transformers>=4.30
-albumentations>=1.3
+timm>=0.9,<2.0
+transformers>=4.30,<5.0
+albumentations>=1.3,<2.0
 
-# pyVHR (rPPG)
-plotly>=5.22
-lmfit>=1.2
-scikit-learn>=1.3
+# pyVHR signal analysis dependencies
+plotly>=5.22,<7.0
+lmfit>=1.2,<2.0
+scikit-learn>=1.3,<2.0
 
 # Utilities
-tqdm>=4.60
+tqdm>=4.60,<5.0
