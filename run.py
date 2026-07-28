@@ -90,7 +90,7 @@ def save_csv(path: Path, rows: List[Dict[str, object]]) -> None:
     if not rows:
         return
     id_cols = ["video_name", "label", "success"]
-    metrics = sorted(k for row in rows for k in row if k not in id_cols and k != "error")
+    metrics = sorted({k for row in rows for k in row if k not in id_cols and k != "error"})
     fields = id_cols + metrics + (["error"] if any("error" in r for r in rows) else [])
     with path.open("w", newline="", encoding="utf-8-sig") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
