@@ -14,19 +14,20 @@ AI 생성·조작 영상 탐지를 위한 **단일 통합 프로젝트**입니�
 
 ---
 
-## 주요 업데이트: GPU 가속 지원
+## 주요 업데이트: GPU 가속 · 다중 프로세스 병렬 처리
 
-기존 CPU 중심 실행 방식에 `--device cuda` 옵션을 추가하여, CUDA를 지원하는 NVIDIA GPU에서 **D3 시각 특징 추출을 가속**할 수 있도록 수정했습니다.
+기존 CPU 중심 실행 방식에 `--device cuda` 옵션을 추가하여, CUDA를 지원하는 NVIDIA GPU에서 **D3 시각 특징 추출을 가속**할 수 있도록 수정했습니다. 또한 `--workers` 옵션으로 **여러 영상을 동시에 처리**할 수 있습니다.
 
 ### 변경 내용
 
 - `--device` 실행 옵션 추가
-- `cpu`와 `cuda` 장치 선택 지원
+- `cpu`와 `cuda` 장치 선택 지원 (`auto`는 CUDA 사용 가능 시 자동 선택)
 - D3 모델을 지정한 장치로 이동
 - 영상 프레임 텐서를 GPU로 이동하여 D3 추론 수행
-- `torch.no_grad()`를 사용하여 추론 과정의 불필요한 그래디언트 계산 방지
+- `torch.inference_mode()`를 사용하여 추론 과정의 불필요한 그래디언트 계산 방지
 - GPU 사용 시 D3 시간 특징과 고주파 특징 계산 속도 개선
-- 기존 CPU 실행 방식 유지
+- `--workers`로 `ProcessPoolExecutor` 기반 영상 단위 병렬 처리 지원
+- 기존 CPU 단일 워커 실행 방식 유지 (`--workers 1`)
 
 ### GPU가 적용되는 범위
 
@@ -49,6 +50,23 @@ rPPG 과정은 현재 `cpu_POS` 방식을 사용하므로 CPU에서 실행됩니
 ```
 
 따라서 `--device cuda`를 사용하더라도 전체 처리 과정이 모두 GPU에서 실행되는 것은 아닙니다. D3 기반 시각 특징 추출 부분이 GPU로 가속됩니다.
+
+### 병렬 처리 (`--workers`)
+
+영상 여러 개를 처리할 때 `--workers N`으로 워커 프로세스 N개를 띄워 동시에 추출할 수 있습니다. 병목인 rPPG(MediaPipe·패치·POS)가 CPU에서 돌아가므로, 코어가 남는 환경에서는 GPU만 쓰는 것보다 전체 처리 시간이 더 줄어드는 경우가 많습니다.
+
+```text
+워커 1 ──→ 영상 A (rPPG CPU + D3 device)
+워커 2 ──→ 영상 B (rPPG CPU + D3 device)
+워커 N ──→ 영상 … 
+              ↓
+         results/*.csv  (입력 영상 순서 유지)
+```
+
+- 기본값: `--workers 1` (기존과 동일한 순차 처리)
+- 권장: CPU 코어·RAM에 맞게 `2`~`4`부터 시작, 여유 있으면 `6`~`8`까지 올려 보기
+- 워커마다 Pipeline과 D3 모델을 따로 로드합니다. `--device cuda`일 때 **VRAM 사용량은 워커 수에 비례**합니다.
+- 특징 추출 알고리즘·결과 의미는 동일하며, 완료 로그 출력 순서만 달라질 수 있습니다. CSV 행 순서는 입력 영상 순서를 유지합니다.
 
 ---
 
@@ -245,6 +263,12 @@ data/videos/
 
 CPU 환경에서는 전체 처리에 수십 분에서 1시간 이상 걸릴 수 있습니다. 처리 시간은 CPU 성능, 영상 길이, 해상도, 얼굴 검출 상태에 따라 달라집니다.
 
+영상 개수가 많을 때는 병렬 워커를 함께 쓰는 것을 권장합니다.
+
+```bash
+python run.py --device cpu --workers 4
+```
+
 ---
 
 
@@ -295,6 +319,18 @@ python run.py data/subject1.mp4 --device cuda
 
 ```bash
 python run.py --device cuda
+```
+
+병렬 워커와 함께 실행하려면 다음과 같이 합니다.
+
+```bash
+python run.py --device cuda --workers 4
+```
+
+Windows PowerShell 예시:
+
+```powershell
+python run.py --device cuda --workers 4
 ```
 
 
@@ -361,8 +397,41 @@ GPU 환경에서는 다음 과정이 가속됩니다.
 - 처리할 영상 개수
 - 프레임 샘플링 수
 - 얼굴 검출 및 rPPG 처리 시간
+- `--workers` 값 (병렬 영상 수)
+---
 
-GPU 사용으로 D3 추론은 빨라질 수 있지만, rPPG 과정이 전체 실행 시간의 큰 비중을 차지한다면 전체 처리 시간이 같은 비율로 줄어들지는 않을 수 있습니다.
+
+
+## 다중 프로세스 병렬 처리
+
+`run.py`는 `--workers`로 영상 단위 병렬 처리를 지원합니다.
+
+```bash
+# 순차 처리 (기본)
+python run.py --device cuda --workers 1
+
+# 4개 영상 동시 처리
+python run.py --device cuda --workers 4
+```
+
+### 동작 방식
+
+- `ProcessPoolExecutor`로 워커 프로세스를 생성합니다.
+- 각 워커는 시작 시 Pipeline과 D3 모델을 한 번 로드한 뒤, 할당된 영상을 처리합니다.
+- 결과 CSV의 행 순서는 입력으로 찾은 영상 순서를 유지합니다.
+- 터미널 진행 로그(`[완료수/전체]`)는 끝나는 순서대로 출력될 수 있습니다.
+
+### 워커 수 선택 가이드
+
+| 조건 | 권장 |
+| ---- | ---- |
+| 기본 / 안정 | `2`~`4` |
+| CPU 코어가 많고 RAM 여유 | `6`~`8` |
+| 논리 코어 수 이상 | 이득이 거의 없음 |
+| `XCLIP` 등 무거운 인코더 + CUDA | VRAM을 보고 `2`~`4` |
+| `CUDA out of memory` 발생 | `--workers`를 낮추거나 가벼운 인코더 사용 |
+
+단일 영상만 처리할 때는 `--workers`를 올려도 이득이 없습니다. 데이터셋 일괄 실행에 사용하세요.
 
 ---
 
@@ -502,11 +571,20 @@ python run.py --device cuda
 
 
 
+## 병렬 처리
+
+```bash
+python run.py --device cuda --workers 4
+```
+
+
+
 ## GPU와 다른 저장 위치 함께 사용
 
 ```bash
 python run.py \
   --device cuda \
+  --workers 4 \
   --save-dir results_gpu/
 ```
 
@@ -517,17 +595,18 @@ python run.py \
 ## 실행 옵션
 
 
-| 옵션               | 설명                           | 기본값           |
-| ---------------- | ---------------------------- | ------------- |
-| `inputs`         | 비디오 파일 또는 폴더 경로              | `data/videos` |
-| `--pattern`      | 폴더에서 검색할 파일 패턴               | `*.mp4`       |
-| `--recursive`    | 하위 폴더까지 검색                   | 활성화           |
-| `--no-recursive` | 현재 폴더만 검색                    | 비활성화          |
-| `--save-dir`     | 결과 CSV 저장 폴더                 | `results/`    |
-| `--real-stems`   | real로 지정할 파일 stem 목록         | 폴더명으로 자동 판별   |
-| `--encoder`      | D3 Vision Encoder            | `ResNet-18`   |
-| `--loss`         | D3 특징 변화 계산 방식: `l2`, `cos`  | `l2`          |
-| `--device`       | PyTorch 실행 장치: `cpu`, `cuda` | `cpu`         |
+| 옵션               | 설명                                      | 기본값           |
+| ---------------- | --------------------------------------- | ------------- |
+| `inputs`         | 비디오 파일 또는 폴더 경로                         | `data/videos` |
+| `--pattern`      | 폴더에서 검색할 파일 패턴                          | `*.mp4`       |
+| `--recursive`    | 하위 폴더까지 검색                              | 활성화           |
+| `--no-recursive` | 현재 폴더만 검색                               | 비활성화          |
+| `--save-dir`     | 결과 CSV 저장 폴더                            | `results/`    |
+| `--real-stems`   | real로 지정할 파일 stem 목록                    | 폴더명으로 자동 판별   |
+| `--encoder`      | D3 Vision Encoder                       | `ResNet-18`   |
+| `--loss`         | D3 특징 변화 계산 방식: `l2`, `cos`             | `l2`          |
+| `--device`       | PyTorch 실행 장치: `auto`, `cpu`, `cuda`   | `auto`        |
+| `--workers`      | 병렬 워커 프로세스 수 (영상 단위, `1`이면 순차)          | `1`           |
 
 
 전체 옵션은 다음 명령으로 확인할 수 있습니다.
@@ -924,7 +1003,8 @@ NOC_AI-Detection/
 | `success=False`                                 | CSV의 `error` 컬럼에서 실패 원인 확인                            |
 | CUDA 관련 오류                                      | CUDA 지원 PyTorch와 NVIDIA 드라이버 설치 상태 확인                 |
 | `Torch not compiled with CUDA enabled`          | CPU 전용 PyTorch가 설치된 상태이므로 CUDA 지원 빌드로 재설치             |
-| `CUDA out of memory`                            | 더 가벼운 인코더 사용, 다른 GPU 작업 종료 또는 CPU 실행                  |
+| `CUDA out of memory`                            | `--workers` 낮추기, 더 가벼운 인코더 사용, 다른 GPU 작업 종료 또는 CPU 실행 |
+| 워커를 올려도 느림 / 시스템 응답 저하                         | CPU·RAM 포화일 수 있음. `--workers`를 줄이거나 다른 프로그램을 종료          |
 | `Expected all tensors to be on the same device` | 모델과 입력 프레임이 같은 장치로 이동했는지 확인                           |
 | 첫 실행이 오래 걸림                                     | 인코더 가중치 다운로드와 초기 모델 로딩 때문일 수 있음                       |
 
@@ -1037,9 +1117,10 @@ Measure-Command {
 
 # 현재 한계
 
-- rPPG POS 방식은 CPU에서 실행됩니다.
-- CUDA 사용 가능 여부를 자동 검사하여 CPU로 전환하지 않습니다.
+- rPPG POS 방식은 CPU에서 실행됩니다. 전체 데이터셋 속도는 `--workers` 병렬화가 더 효과적인 경우가 많습니다.
+- `--device auto`는 CUDA 사용 가능 시 GPU를 선택하고, 없으면 CPU를 사용합니다. `--device cuda`는 CUDA가 없으면 오류를 냅니다.
 - GPU 가속 성능은 D3 인코더와 영상 조건에 따라 달라집니다.
+- `--workers`를 올리면 워커마다 모델을 로드하므로 RAM·VRAM 사용량이 증가합니다.
 - 이 프로젝트의 결과 CSV 자체는 최종 real/fake 판정 결과가 아니라 탐지용 특징값입니다.
 - 최종 분류를 위해서는 추출 특징을 이용한 별도의 분류 모델 또는 판정 기준이 필요합니다.
 - 현재 프레임 샘플링 방식은 원본 D3 논문의 평가 방식과 다릅니다.
@@ -1102,5 +1183,11 @@ python run.py data/videos/real/subject1.mp4 --device cuda
 
 ```bash
 python run.py --device cuda
+```
+
+영상 개수가 많을 때는 병렬 워커를 함께 사용합니다.
+
+```bash
+python run.py --device cuda --workers 4
 ```
 
