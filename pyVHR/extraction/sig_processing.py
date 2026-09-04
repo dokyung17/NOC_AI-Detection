@@ -260,6 +260,38 @@ class SignalProcessing():
         sig = np.array(sig, dtype=np.float32)
         return sig
 
+    def extract_crop(self, videoFileName, roi=None):
+        """
+        RGB mean from a fixed rectangle without FaceMesh.
+
+        Args:
+            videoFileName (str): video file name or path.
+            roi (tuple | None): (x, y, width, height) in pixels, or None for full frame.
+
+        Returns:
+            float32 ndarray: RGB signal with shape [num_frames, 1, rgb_channels].
+        """
+        self.visualize_skin_collection = []
+        rgb_low = np.int32(SignalProcessingParams.RGB_LOW_TH)
+        rgb_high = np.int32(SignalProcessingParams.RGB_HIGH_TH)
+
+        sig = []
+        processed_frames_count = 0
+        for frame in extract_frames_yield(videoFileName):
+            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            processed_frames_count += 1
+            if roi is None:
+                patch = image
+            else:
+                x, y, w, h = roi
+                patch = image[int(y): int(y + h), int(x): int(x + w)]
+                if patch.size == 0:
+                    patch = np.zeros((1, 1, 3), dtype=np.uint8)
+            sig.append(holistic_mean(patch, rgb_low, rgb_high))
+            if self.tot_frames is not None and self.tot_frames > 0 and processed_frames_count >= self.tot_frames:
+                break
+        return np.array(sig, dtype=np.float32)
+
     ### PATCHES METHODS ###
 
     def set_landmarks(self, landmarks_list):

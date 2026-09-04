@@ -1,0 +1,97 @@
+[로드] results/Green_unified_features_20260812_194745.csv
+[real 폴더] C:\Users\22dkw\Desktop\NOC_AI-Detection\data\videos\real -> 335개
+group
+deepfake     248
+diffusion    217
+real         335
+dtype: int64
+
+=== 5-fold 교차검증 평가 (3진 분류) ===
+  fold 1: accuracy = 0.750
+  fold 2: accuracy = 0.694
+  fold 3: accuracy = 0.744
+  fold 4: accuracy = 0.756
+  fold 5: accuracy = 0.662
+
+=== 전체 5-fold 교차검증 결과 ===
+Accuracy: 0.721
+              precision    recall  f1-score   support
+
+        real      0.727     0.716     0.722       335
+   diffusion      0.715     0.682     0.698       217
+    deepfake      0.719     0.762     0.740       248
+
+    accuracy                          0.721       800
+   macro avg      0.720     0.720     0.720       800
+weighted avg      0.721     0.721     0.721       800
+
+Confusion matrix (행=실제, 열=예측):
+           real  diffusion  deepfake
+real        240         44        51
+diffusion    46        148        23
+deepfake     44         15       189
+
+=== 전체 데이터로 최종 모델 학습 ===
+
+[저장 완료] 최종 모델 -> xgb_model_3class_0824.joblib
+
+=== SHAP 설명 ===
+
+=== 전역 피처 중요도 (|SHAP| 평균) ===
+  patch_signal_std_mean     0.5932
+  highfreq_score            0.5418
+  d3_temporal_score         0.4069
+  absdiff_std               0.3188
+  bvp_std                   0.2847
+  patch_corr_mean           0.2738
+  pseudo_snr_db             0.2291
+
+=== 예시 영상 3개에 대한 개별 설명 ===
+
+--- kling_0025.mp4 (실제 라벨: diffusion) ---
+
+예측: diffusion (확률 96.5%)
+  - real: 2.6%
+  - diffusion: 96.5%
+  - deepfake: 0.9%
+
+'diffusion' 예측에 대한 피처 기여도 (영향 큰 순):
+  + bvp_std                   값=0.5923   기여도=+0.7532
+  + patch_signal_std_mean     값=2.3224   기여도=+0.5562
+  + highfreq_score            값=0.0167   기여도=+0.5540
+  + absdiff_std               값=0.2018   기여도=+0.3411
+  + d3_temporal_score         값=1.5142   기여도=+0.3206
+  + pseudo_snr_db             값=-8.0600   기여도=+0.1211
+  + patch_corr_mean           값=0.1327   기여도=+0.0556
+
+--- id0_id3_0000.mp4 (실제 라벨: deepfake) ---
+
+예측: deepfake (확률 94.1%)
+  - real: 4.9%
+  - diffusion: 1.0%
+  - deepfake: 94.1%
+
+'deepfake' 예측에 대한 피처 기여도 (영향 큰 순):
+  + patch_signal_std_mean     값=0.7812   기여도=+1.4747
+  + d3_temporal_score         값=3.3207   기여도=+0.8760
+  - patch_corr_mean           값=0.1652   기여도=-0.3096
+  + highfreq_score            값=0.0129   기여도=+0.2715
+  - absdiff_std               값=0.1117   기여도=-0.1158
+  - pseudo_snr_db             값=-6.2893   기여도=-0.0609
+  - bvp_std                   값=0.3872   기여도=-0.0170
+
+--- Veo_0018.mp4 (실제 라벨: diffusion) ---
+
+예측: diffusion (확률 86.9%)
+  - real: 1.2%
+  - diffusion: 86.9%
+  - deepfake: 11.9%
+
+'diffusion' 예측에 대한 피처 기여도 (영향 큰 순):
+  + highfreq_score            값=0.0252   기여도=+1.3047
+  - d3_temporal_score         값=3.2111   기여도=-0.8871
+  + patch_signal_std_mean     값=3.1062   기여도=+0.4968
+  + absdiff_std               값=0.3461   기여도=+0.3048
+  + patch_corr_mean           값=0.2104   기여도=+0.1810
+  - bvp_std                   값=1.2705   기여도=-0.1762
+  + pseudo_snr_db             값=-6.0179   기여도=+0.0816

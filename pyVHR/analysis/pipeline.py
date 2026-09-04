@@ -21,6 +21,7 @@ class Pipeline:
         self,
         videoFileName,
         roi_approach="patches",
+        fixed_roi=None,
         method="cpu_POS",
         bpm_type="welch",
         pre_filt=False,
@@ -41,11 +42,16 @@ class Pipeline:
 
         available_methods = [name for name, _ in getmembers(pyVHR.BVP.methods, isfunction)]
         assert method in available_methods, f"Unknown rPPG method: {method}"
-        assert roi_approach in ("patches", "hol"), "roi_approach must be 'patches' or 'hol'"
+        assert roi_approach in ("patches", "hol", "crop"), (
+            "roi_approach must be 'patches', 'hol', or 'crop'"
+        )
         assert bpm_type == "welch", "Only bpm_type='welch' is supported in this build"
 
         sig_processing = SignalProcessing()
-        sig_processing.set_skin_extractor(SkinExtractionConvexHull())
+        use_face_mesh = roi_approach != "crop"
+
+        if use_face_mesh:
+            sig_processing.set_skin_extractor(SkinExtractionConvexHull())
 
         if roi_approach == "patches":
             sig_processing.set_landmarks(ldmks_list)
@@ -58,12 +64,16 @@ class Pipeline:
 
         if verb:
             print("Processing video:", videoFileName)
+            if roi_approach == "crop":
+                print("FaceMesh: OFF | fixed_roi:", fixed_roi or "full_frame")
 
         fps = get_fps(videoFileName)
         sig_processing.set_total_frames(0)
 
         if roi_approach == "hol":
             sig = sig_processing.extract_holistic(videoFileName)
+        elif roi_approach == "crop":
+            sig = sig_processing.extract_crop(videoFileName, fixed_roi)
         else:
             sig = sig_processing.extract_patches(videoFileName, "squares", "mean")
 

@@ -1,0 +1,122 @@
+[로드] results/Green_unified_features_20260812_194745.csv
+[real 폴더] C:\Users\22dkw\Desktop\NOC_AI-Detection\data\videos\real -> 335개
+group
+deepfake     248
+diffusion    217
+real         335
+dtype: int64
+
+=== [A real vs diffusion] 5-fold (home: real vs diffusion, n=552) ===
+  fold 1: accuracy = 0.748
+  fold 2: accuracy = 0.802
+  fold 3: accuracy = 0.909
+  fold 4: accuracy = 0.809
+  fold 5: accuracy = 0.855
+Accuracy: 0.824
+              precision    recall  f1-score   support
+
+        real      0.870     0.836     0.852       335
+   diffusion      0.761     0.806     0.783       217
+
+    accuracy                          0.824       552
+   macro avg      0.815     0.821     0.818       552
+weighted avg      0.827     0.824     0.825       552
+
+Confusion matrix (행=실제, 열=예측):
+           real  diffusion
+real        280         55
+diffusion    42        175
+
+=== [B real vs deepfake] 5-fold (home: real vs deepfake, n=583) ===
+  fold 1: accuracy = 0.863
+  fold 2: accuracy = 0.761
+  fold 3: accuracy = 0.795
+  fold 4: accuracy = 0.810
+  fold 5: accuracy = 0.819
+Accuracy: 0.810
+              precision    recall  f1-score   support
+
+        real      0.837     0.830     0.834       335
+    deepfake      0.773     0.782     0.778       248
+
+    accuracy                          0.810       583
+   macro avg      0.805     0.806     0.806       583
+weighted avg      0.810     0.810     0.810       583
+
+Confusion matrix (행=실제, 열=예측):
+          real  deepfake
+real       278        57
+deepfake    54       194
+
+=== 전체 데이터에 대한 out-of-fold 점수 (A·B 모두 적용) ===
+[저장] OOF 점수 -> dual_binary_oof_scores.csv
+
+=== 실제 클래스별 평균 점수 ===
+  real        mean P(diffusion)=0.186  mean P(deepfake)=0.239
+  diffusion   mean P(diffusion)=0.726  mean P(deepfake)=0.339
+  deepfake    mean P(diffusion)=0.349  mean P(deepfake)=0.728
+
+=== 임계값 그리드 서치 ===
+[추천] tau_diff=0.55, tau_df=0.60 (accuracy=0.733, macro_f1=0.728, min_recall=0.694)
+ tau_diff  tau_df  accuracy  macro_f1  recall_real  recall_diffusion  recall_deepfake  min_recall
+     0.55    0.60     0.732     0.728        0.782             0.700            0.694       0.694
+     0.55    0.55     0.730     0.726        0.761             0.700            0.714       0.700
+     0.55    0.65     0.730     0.725        0.791             0.700            0.673       0.673
+     0.60    0.60     0.730     0.724        0.794             0.673            0.694       0.673
+     0.55    0.70     0.730     0.724        0.812             0.700            0.645       0.645
+     0.60    0.55     0.728     0.722        0.773             0.673            0.714       0.673
+     0.65    0.60     0.729     0.722        0.806             0.645            0.698       0.645
+     0.60    0.65     0.728     0.721        0.803             0.673            0.673       0.673
+     0.55    0.50     0.724     0.721        0.740             0.700            0.722       0.700
+     0.60    0.70     0.728     0.720        0.824             0.673            0.645       0.645
+[저장] 임계값 비교표 -> threshold_comparison.txt
+[자동 적용] tau_diff=0.55, tau_df=0.60
+
+=== 합친 3진 평가 (τ_diff=0.55, τ_df=0.6, 동시고득점→더 높은 쪽) ===
+Accuracy: 0.733
+              precision    recall  f1-score   support
+
+        real      0.740     0.782     0.761       335
+   diffusion      0.717     0.700     0.709       217
+    deepfake      0.735     0.694     0.714       248
+
+    accuracy                          0.733       800
+   macro avg      0.731     0.725     0.728       800
+weighted avg      0.732     0.733     0.732       800
+
+Confusion matrix (행=실제, 열=예측):
+           real  diffusion  deepfake
+real        262         37        36
+diffusion    39        152        26
+deepfake     53         23       172
+macro F1: 0.728
+
+=== 전체 데이터로 최종 A·B 모델 학습 ===
+[저장 완료] 이중 모델 -> xgb_model_dual_binary.joblib
+
+=== 예시 영상 5개 ===
+
+--- Veo_0016.mp4 (실제 라벨: diffusion) ---
+  [A real vs diffusion]  diffusion 97.5%  |  real 2.5%
+  [B real vs deepfake]   deepfake  21.5%  |  real 78.5%
+  합친 라벨 (τ_diff=0.55, τ_df=0.6): diffusion
+
+--- 02_21__talking_angry_couch__Z0XHPQAR.mp4 (실제 라벨: deepfake) ---
+  [A real vs diffusion]  diffusion 91.0%  |  real 9.0%
+  [B real vs deepfake]   deepfake  97.3%  |  real 2.7%
+  합친 라벨 (τ_diff=0.55, τ_df=0.6): deepfake
+
+--- kling_0024.mp4 (실제 라벨: diffusion) ---
+  [A real vs diffusion]  diffusion 89.6%  |  real 10.4%
+  [B real vs deepfake]   deepfake  53.0%  |  real 47.0%
+  합친 라벨 (τ_diff=0.55, τ_df=0.6): diffusion
+
+--- id0_id3_0000.mp4 (실제 라벨: deepfake) ---
+  [A real vs diffusion]  diffusion 2.2%  |  real 97.8%
+  [B real vs deepfake]   deepfake  96.3%  |  real 3.7%
+  합친 라벨 (τ_diff=0.55, τ_df=0.6): deepfake
+
+--- 02_18__secret_conversation__B95S4G6F.mp4 (실제 라벨: deepfake) ---
+  [A real vs diffusion]  diffusion 61.9%  |  real 38.1%
+  [B real vs deepfake]   deepfake  96.6%  |  real 3.4%
+  합친 라벨 (τ_diff=0.55, τ_df=0.6): deepfake

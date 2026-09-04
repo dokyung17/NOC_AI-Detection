@@ -13,8 +13,11 @@ real / diffusion / deepfake 분류 파이프라인 (XGBoost + SHAP)
     pip install xgboost shap scikit-learn pandas numpy joblib
 
 이 스크립트가 하는 일:
-    1. CSV 로드 + 중복 컬럼(피처가 프레임 수만큼 반복 저장된 버그) 정리
-    2. 파일명 패턴으로 real / diffusion / deepfake 라벨링
+    1. CSV 로드 + 7개 핵심 피처만 사용
+    2. 라벨링
+       - real: data/videos/real 폴더에 있는 파일명
+       - deepfake: '__'/'~', idN_idM_xxxx.mp4, 00xx_fake.mp4
+       - diffusion: 나머지
        --binary 옵션을 주면 diffusion+deepfake를 'fake' 하나로 합쳐서 real vs fake 이진 분류로 진행
     3. (옵션) IQR 기반 이상치 제거 -- 기본은 꺼져 있음
     4. XGBoost 분류 (multi:softprob) 5-fold 층화 교차검증으로 성능 평가
@@ -25,11 +28,11 @@ real / diffusion / deepfake 분류 파이프라인 (XGBoost + SHAP)
 import argparse
 import re
 import warnings
+from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -49,6 +52,10 @@ FEATURE_COLS = [
     "patch_signal_std_mean",
     "pseudo_snr_db",
 ]
+
+DEFAULT_REAL_DIR = Path(__file__).resolve().parent / "data" / "videos" / "real"
+DEEPFAKE_ID_ID = re.compile(r"^id\d+_id\d+_\d+\.mp4$", re.IGNORECASE)
+DEEPFAKE_N_FAKE = re.compile(r"^\d+_fake\.mp4$", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -71,9 +78,21 @@ def decode_labels(y_idx: np.ndarray, idx_to_class: dict) -> np.ndarray:
 # ---------------------------------------------------------------------------
 # 1) 데이터 로드 + 라벨링
 # ---------------------------------------------------------------------------
-def load_and_label(csv_path: str) -> pd.DataFrame:
-    """CSV를 읽고, 중복 컬럼을 대표값 하나로 정리한 뒤 3그룹으로 라벨링한다."""
+def load_real_names(real_dir: str | Path) -> set[str]:
+    real_path = Path(real_dir)
+    if not real_path.is_dir():
+        raise SystemExit(f"real 폴더를 찾을 수 없습니다: {real_path}")
+    names = {p.name.lower() for p in real_path.iterdir() if p.is_file()}
+    if not names:
+        raise SystemExit(f"real 폴더가 비어 있습니다: {real_path}")
+    print(f"[real 폴더] {real_path} -> {len(names)}개")
+    return names
+
+
+def load_and_label(csv_path: str, real_dir: str | Path = DEFAULT_REAL_DIR) -> pd.DataFrame:
+    """CSV를 읽고 7개 피처만 남긴 뒤, real 폴더 + 파일명 규칙으로 3그룹 라벨을 붙인다."""
     df = pd.read_csv(csv_path)
+    real_names = load_real_names(real_dir)
 
     reduced = df[["video_name"]].copy()
     if "label" in df.columns:
@@ -83,22 +102,26 @@ def load_and_label(csv_path: str) -> pd.DataFrame:
             raise ValueError(f"'{feat}' 컬럼을 CSV에서 찾을 수 없습니다.")
         reduced[feat] = df[feat]
 
-    reduced["group"] = reduced["video_name"].apply(classify_video_name)
+    reduced["group"] = reduced["video_name"].apply(lambda n: classify_video_name(n, real_names))
     return reduced
 
 
-def classify_video_name(name: str) -> str:
+def classify_video_name(name: str, real_names: set[str] | None = None) -> str:
     """
-    파일명 패턴으로 real / diffusion / deepfake 분류.
-    (sora_/seedance_/veo_/grok_/kling_/hf_ = diffusion,
-     '__' 포함 또는 idN_idM_xxxx.mp4 패턴 = deepfake(페이스스왑), 나머지 = real)
+    1) data/videos/real 에 있는 파일명 -> real
+    2) 딥페이크 패턴 -> deepfake
+       - FaceForensics식 '__' 또는 source~target 이름
+       - idN_idM_xxxx.mp4
+       - 00xx_fake.mp4
+    3) 나머지 -> diffusion
     """
-    n = name.lower()
-    if n.startswith("hf_") or n.startswith(("sora_", "seedance_", "veo_", "grok_", "kling_")):
-        return "diffusion"
-    if "__" in name or re.match(r"^id\d+_id\d+_\d+\.mp4$", name):
+    fname = Path(str(name)).name
+    key = fname.lower()
+    if real_names is not None and key in real_names:
+        return "real"
+    if "__" in fname or "~" in fname or DEEPFAKE_ID_ID.match(fname) or DEEPFAKE_N_FAKE.match(fname):
         return "deepfake"
-    return "real"
+    return "diffusion"
 
 
 def to_binary_group(group_series: pd.Series) -> pd.Series:
@@ -107,23 +130,23 @@ def to_binary_group(group_series: pd.Series) -> pd.Series:
 
 
 def classify_subgroup(name: str) -> str:
-    """
-    classify_video_name보다 더 세부적으로, 어떤 생성모델/기법인지까지 구분한다.
-    (오분류가 특정 생성모델에 몰려있는지 진단할 때 사용)
-    """
-    n = name.lower()
+    """생성모델/기법까지 나눠 오분류가 어디에 몰리는지 진단할 때 사용."""
+    fname = Path(str(name)).name
+    n = fname.lower()
     for prefix in ("hf_", "sora_", "seedance_", "veo_", "grok_", "kling_"):
         if n.startswith(prefix):
             return prefix.rstrip("_") if prefix != "hf_" else "hf(renamed diffusion)"
-    if "__" in name:
-        return "faceforensics(__)"
-    if re.match(r"^id\d+_id\d+_\d+\.mp4$", name):
+    if DEEPFAKE_N_FAKE.match(fname):
+        return "deepfake(N_fake)"
+    if DEEPFAKE_ID_ID.match(fname):
         return "id_id(faceswap)"
-    if re.match(r"^id\d+_\d+\.mp4$", name):
+    if "__" in fname or "~" in fname:
+        return "faceforensics(__/~)"
+    if re.match(r"^id\d+_\d+\.mp4$", n):
         return "real(id_pattern)"
-    if re.match(r"^subject\d+\.mp4$", name):
+    if re.match(r"^subject\d+\.mp4$", n):
         return "real(subject_pattern)"
-    if re.match(r"^\d+\.mp4$", name):
+    if re.match(r"^\d+\.mp4$", n):
         return "real(numeric)"
     return "기타"
 
@@ -441,6 +464,8 @@ def explain_single_video(model, explainer, x_row: np.ndarray, feature_names, cla
 def main():
     parser = argparse.ArgumentParser(description="real/diffusion/deepfake 분류 (XGBoost + SHAP)")
     parser.add_argument("--csv", required=True, help="입력 CSV 경로 (unified_features_*.csv)")
+    parser.add_argument("--real-dir", default=str(DEFAULT_REAL_DIR),
+                         help="진짜 영상 폴더 (여기 있는 파일명만 real로 라벨링)")
     parser.add_argument("--binary", action="store_true",
                          help="diffusion+deepfake를 'fake'로 합쳐서 real vs fake 이진 분류로 진행")
     parser.add_argument("--hierarchical", action="store_true",
@@ -465,7 +490,7 @@ def main():
     args = parser.parse_args()
 
     print(f"[로드] {args.csv}")
-    df = load_and_label(args.csv)
+    df = load_and_label(args.csv, real_dir=args.real_dir)
 
     if args.diffusion_only:
         if args.binary or args.hierarchical:

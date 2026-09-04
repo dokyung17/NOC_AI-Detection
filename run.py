@@ -14,8 +14,9 @@ import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
+import cv2
 import torch
 
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
@@ -35,6 +36,57 @@ from visual.highfreq import highfreq_laplacian_score  # noqa: E402
 _WORKER: Dict[str, object] = {}
 
 
+def parse_roi(s: str) -> Tuple[int, int, int, int]:
+    parts = [int(x.strip()) for x in s.split(",")]
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError("ROI format: x,y,width,height")
+    x, y, w, h = parts
+    if w <= 0 or h <= 0:
+        raise argparse.ArgumentTypeError("width and height must be positive")
+    return x, y, w, h
+
+
+def select_roi_interactive(video_path: Path) -> Tuple[int, int, int, int]:
+    cap = cv2.VideoCapture(str(video_path))
+    ok, frame = cap.read()
+    cap.release()
+    if not ok:
+        raise RuntimeError(f"Cannot read first frame: {video_path}")
+
+    print("드래그로 ROI 선택 → Enter/Space=확인, c=취소")
+    roi = cv2.selectROI("Select ROI (--no-face)", frame, fromCenter=False, showCrosshair=True)
+    cv2.destroyAllWindows()
+    x, y, w, h = (int(v) for v in roi)
+    if w == 0 or h == 0:
+        raise RuntimeError("ROI not selected")
+    return x, y, w, h
+
+
+def resolve_rppg_roi(
+    no_face: bool,
+    roi_arg: Optional[Tuple[int, int, int, int]],
+    full_frame: bool,
+    select_roi: bool,
+    videos: List[Path],
+) -> Tuple[str, Optional[Tuple[int, int, int, int]]]:
+    """Return (roi_approach, fixed_roi). Default: FaceMesh patches."""
+    if not no_face:
+        return "patches", None
+
+    if select_roi:
+        if len(videos) != 1:
+            raise ValueError("--select-roi requires exactly one video")
+        fixed = select_roi_interactive(videos[0])
+        print(f"Selected ROI: x={fixed[0]}, y={fixed[1]}, w={fixed[2]}, h={fixed[3]}")
+        return "crop", fixed
+    if roi_arg is not None:
+        return "crop", roi_arg
+    if full_frame:
+        return "crop", None
+
+    raise ValueError("--no-face requires one of: --roi, --select-roi, --full-frame")
+
+
 def extract_d3_scores(model: D3_model, video_path: Path, device: torch.device) -> tuple[float, float]:
     frames = load_frames_from_video(video_path).to(device)
     with torch.inference_mode():
@@ -50,6 +102,8 @@ def process_video(
     device: torch.device,
     video_path: Path,
     real_stems: set,
+    roi_approach: str = "patches",
+    fixed_roi: Optional[Tuple[int, int, int, int]] = None,
 ) -> Dict[str, object]:
     row: Dict[str, object] = {
         "video_name": video_path.name,
@@ -59,7 +113,8 @@ def process_video(
     try:
         time, bpm, uncertainty, windowed_bvps, fps = pipe.run_on_video(
             str(video_path),
-            roi_approach="patches",
+            roi_approach=roi_approach,
+            fixed_roi=fixed_roi,
             method="cpu_POS",
             bpm_type="welch",
             post_filt=True,
@@ -77,7 +132,13 @@ def process_video(
     return row
 
 
-def _init_worker(encoder: str, loss: str, device_str: str) -> None:
+def _init_worker(
+    encoder: str,
+    loss: str,
+    device_str: str,
+    roi_approach: str,
+    fixed_roi: Optional[Tuple[int, int, int, int]],
+) -> None:
     """Load Pipeline + D3 once per worker process."""
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     device = torch.device(device_str)
@@ -88,6 +149,8 @@ def _init_worker(encoder: str, loss: str, device_str: str) -> None:
     _WORKER["pipe"] = Pipeline()
     _WORKER["model"] = model
     _WORKER["device"] = device
+    _WORKER["roi_approach"] = roi_approach
+    _WORKER["fixed_roi"] = fixed_roi
 
 
 def _worker_process_video(
@@ -100,6 +163,8 @@ def _worker_process_video(
         _WORKER["device"],  # type: ignore[arg-type]
         Path(video_str),
         set(real_stems),
+        roi_approach=str(_WORKER["roi_approach"]),
+        fixed_roi=_WORKER["fixed_roi"],  # type: ignore[arg-type]
     )
     return idx, row
 
@@ -167,7 +232,35 @@ def main() -> None:
         default=1,
         help="Number of parallel worker processes (default: 1). Try 2-4.",
     )
+    parser.add_argument(
+        "--no-face",
+        action="store_true",
+        help="Turn OFF MediaPipe FaceMesh; extract rPPG from a fixed crop instead",
+    )
+    parser.add_argument(
+        "--roi",
+        type=parse_roi,
+        default=None,
+        help="Fixed crop as x,y,width,height (use with --no-face)",
+    )
+    parser.add_argument(
+        "--full-frame",
+        action="store_true",
+        help="Use entire frame as crop (use with --no-face)",
+    )
+    parser.add_argument(
+        "--select-roi",
+        action="store_true",
+        help="Pick crop on first frame with mouse (use with --no-face, single video)",
+    )
     args = parser.parse_args()
+
+    if args.no_face:
+        roi_modes = sum([args.roi is not None, args.full_frame, args.select_roi])
+        if roi_modes != 1:
+            raise ValueError("--no-face requires exactly one of: --roi, --full-frame, --select-roi")
+    elif args.roi or args.full_frame or args.select_roi:
+        raise ValueError("--roi / --full-frame / --select-roi require --no-face")
 
     if args.workers < 1:
         raise ValueError("--workers must be >= 1")
@@ -175,6 +268,14 @@ def main() -> None:
     videos = resolve_videos(args.inputs, args.pattern, args.recursive)
     if not videos:
         raise FileNotFoundError("No videos found.")
+
+    roi_approach, fixed_roi = resolve_rppg_roi(
+        args.no_face,
+        args.roi,
+        args.full_frame,
+        args.select_roi,
+        videos,
+    )
 
     save_dir = Path(args.save_dir).expanduser().resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -202,6 +303,10 @@ def main() -> None:
         print("D3 and high-frequency features will run on CPU.")
 
     print("rPPG cpu_POS will continue to run on CPU.")
+    if roi_approach == "crop":
+        print(f"FaceMesh: OFF | fixed_roi: {fixed_roi or 'full_frame'}")
+    else:
+        print("FaceMesh: ON  | roi_approach: patches")
     print("=" * 60)
 
     total = len(videos)
@@ -216,7 +321,9 @@ def main() -> None:
         ).to(device)
         model.eval()
         for i, video in enumerate(videos, 1):
-            row = process_video(pipe, model, device, video, real_stems)
+            row = process_video(
+                pipe, model, device, video, real_stems, roi_approach, fixed_roi
+            )
             rows[i - 1] = row
             if row.get("success"):
                 ok += 1
@@ -228,7 +335,7 @@ def main() -> None:
         with ProcessPoolExecutor(
             max_workers=args.workers,
             initializer=_init_worker,
-            initargs=(args.encoder, args.loss, device.type),
+            initargs=(args.encoder, args.loss, device.type, roi_approach, fixed_roi),
         ) as pool:
             futures = [pool.submit(_worker_process_video, p) for p in payloads]
             for fut in as_completed(futures):
