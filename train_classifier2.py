@@ -14,7 +14,7 @@ real / diffusion / deepfake 3진 분류 파이프라인 (XGBoost + SHAP)
     - diffusion: 나머지
 
 이 스크립트가 하는 일:
-    1. CSV 로드 + 7개 핵심 피처만 사용
+    1. CSV 로드 + 13개 핵심 피처만 사용
     2. real 폴더 + 파일명 패턴으로 real / diffusion / deepfake 라벨링
     3. (옵션) IQR 기반 이상치 제거 -- 기본은 꺼져 있음
     4. XGBoost 분류 (multi:softprob) 5-fold 층화 교차검증으로 성능 평가
@@ -64,6 +64,12 @@ FEATURE_COLS = [
     "patch_corr_mean",
     "patch_signal_std_mean",
     "pseudo_snr_db",
+    "boundary_score_mean",
+    "boundary_score_std",
+    "boundary_score_max",
+    "identity_sim_mean",
+    "identity_sim_std",
+    "identity_sim_min",
 ]
 
 CLASS_NAMES = ["real", "diffusion", "deepfake"]
@@ -99,7 +105,7 @@ def load_real_names(real_dir: str | Path) -> set[str]:
 
 
 def load_and_label(csv_path: str, real_dir: str | Path = DEFAULT_REAL_DIR) -> pd.DataFrame:
-    """CSV를 읽고 7개 피처만 남긴 뒤, real 폴더 + 파일명 규칙으로 3그룹 라벨을 붙인다."""
+    """CSV를 읽고 핵심 피처만 남긴 뒤, real 폴더 + 파일명 규칙으로 3그룹 라벨을 붙인다."""
     df = pd.read_csv(csv_path)
     real_names = load_real_names(real_dir)
 

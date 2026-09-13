@@ -7,3 +7,6 @@ venv/
 
 # Dataset (local only — do not push to GitHub)
 data/videos/
+
+# Downloaded ArcFace ONNX weights
+models/arcface/

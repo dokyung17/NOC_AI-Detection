@@ -6,7 +6,7 @@
     python predict.py --model xgb_model_3class_0824.joblib --csv results/unified_features_20260831_210753.csv --out results/predict_test.csv
 
 new_videos_features.csv는 train_classifier.py가 읽는 것과 같은 포맷
-(video_name 컬럼 + 7개 피처 컬럼)이어야 합니다.
+(video_name 컬럼 + train_classifier FEATURE_COLS 피처 컬럼)이어야 합니다.
 """
 
 from __future__ import annotations
