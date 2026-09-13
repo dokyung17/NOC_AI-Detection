@@ -14,7 +14,8 @@ real / diffusion / deepfake 3진 분류 파이프라인 (XGBoost + SHAP)
     - diffusion: 나머지
 
 이 스크립트가 하는 일:
-    1. CSV 로드 + 13개 핵심 피처만 사용
+    1. CSV 로드 + 10개 핵심 피처만 사용
+       (select_features.py 선별 결과: pseudo_snr_db / identity_sim_mean / identity_sim_min 제외)
     2. real 폴더 + 파일명 패턴으로 real / diffusion / deepfake 라벨링
     3. (옵션) IQR 기반 이상치 제거 -- 기본은 꺼져 있음
     4. XGBoost 분류 (multi:softprob) 5-fold 층화 교차검증으로 성능 평가
@@ -63,13 +64,10 @@ FEATURE_COLS = [
     "highfreq_score",
     "patch_corr_mean",
     "patch_signal_std_mean",
-    "pseudo_snr_db",
     "boundary_score_mean",
     "boundary_score_std",
     "boundary_score_max",
-    "identity_sim_mean",
     "identity_sim_std",
-    "identity_sim_min",
 ]
 
 CLASS_NAMES = ["real", "diffusion", "deepfake"]

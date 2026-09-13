@@ -49,5 +49,5 @@ joblib>=1.3,<2.0
 # Keep xgboost <3 so TreeExplainer works with that shap version.
 xgboost>=2.0,<3.0
 shap>=0.44,<0.47
-# Optional booster used by train_classifier4.py stacking ensemble
+# Optional booster (not used by the current XGBoost classifiers)
 lightgbm>=4.0,<5.0

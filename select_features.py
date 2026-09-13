@@ -1,13 +1,13 @@
 """
-real / diffusion / deepfake 3진 분류 + boundary/identity 피처 선택 파이프라인
-==========================================================================
+boundary / identity 피처 선택 실험
+================================
 
-train_classifier2.py 를 기반으로 하되, boundary 계열(3개)과 identity 계열(3개)
-피처 중에서 실제 분류 성능에 기여하는 조합만 골라 최종 모델을 만든다.
+분류기 본체가 아니다. train_classifier2.py 와 같은 데이터/모델 설정을 쓰되,
+boundary·identity 계열의 조합을 비교해서 어떤 피처가 실제로 도움이 되는지 확인한다.
 
 사용법:
-    python train_classifier4.py --csv results/unified_features_20260911_024351.csv
-    python train_classifier4.py --csv ... --test-size 0.2 --tol 0.005
+    python select_features.py --csv results/unified_features_20260911_024351.csv
+    python select_features.py --csv ... --test-size 0.2 --tol 0.005
 
 진행 순서:
     1. CSV 로드 + train_classifier2 와 동일한 규칙으로 real/diffusion/deepfake 라벨링
@@ -18,7 +18,9 @@ train_classifier2.py 를 기반으로 하되, boundary 계열(3개)과 identity 
        confusion matrix / SHAP)
     6. 전체 피처 모델과 성능 비교 후 Markdown 보고서 자동 생성
 
-모든 산출물은 results/train_classifier4_YYYYMMDD_HHMMSS/ 아래에 저장된다.
+선별 결과를 실제 학습에 쓰려면 train_classifier2.py 의 FEATURE_COLS 를 수정한다.
+
+모든 산출물은 results/select_features_YYYYMMDD_HHMMSS/ 아래에 저장된다.
 """
 
 from __future__ import annotations
@@ -66,11 +68,9 @@ warnings.filterwarnings("ignore")
 
 # ---------------------------------------------------------------------------
 # 피처 그룹 정의 (ALL_FEATURES = BASE + BOUNDARY + IDENTITY)
-# EXCLUDED_FEATURES 는 후보에서 아예 제외한다.
+# FEATURE_COLS 는 train_classifier2 에서 이미 선별된 목록을 쓴다.
 # ---------------------------------------------------------------------------
-EXCLUDED_FEATURES = ["pseudo_snr_db"]
-
-ALL_FEATURES = [c for c in FEATURE_COLS if c not in EXCLUDED_FEATURES]
+ALL_FEATURES = list(FEATURE_COLS)
 BOUNDARY_FEATURES = [c for c in ALL_FEATURES if c.startswith("boundary_")]
 IDENTITY_FEATURES = [c for c in ALL_FEATURES if c.startswith("identity_")]
 BASE_FEATURES = [c for c in ALL_FEATURES if c not in BOUNDARY_FEATURES + IDENTITY_FEATURES]
@@ -449,7 +449,7 @@ def build_markdown_report(ctx: dict) -> str:
     parts = []
     a = parts.append
 
-    a("# train_classifier4 Experiment Results\n")
+    a("# Feature Selection Experiment Results\n")
     a(f"생성 시각: {ctx['timestamp']}\n")
 
     # 1. 실험 개요
@@ -628,7 +628,7 @@ def find_latest_csv() -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="real/diffusion/deepfake 3진 분류 + boundary/identity 피처 선택"
+        description="boundary/identity 피처 조합 비교 실험 (분류기 본체가 아님)"
     )
     parser.add_argument("--csv", default=None, help="입력 CSV 경로 (기본: results 의 최신 unified_features_*.csv)")
     parser.add_argument("--real-dir", default=str(DEFAULT_REAL_DIR), help="진짜 영상 폴더")
@@ -644,7 +644,7 @@ def main():
 
     csv_path = args.csv or find_latest_csv()
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = Path(args.out_root) / f"train_classifier4_{stamp}"
+    out_dir = Path(args.out_root) / f"select_features_{stamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     tee = Tee(sys.stdout, out_dir / "run_log.txt")
@@ -663,8 +663,6 @@ def _run(args, csv_path: str, out_dir: Path, stamp: str):
     class_weight_multipliers = parse_class_weight(args.class_weight) if args.class_weight else {}
 
     print(f"[로드] {csv_path}")
-    if EXCLUDED_FEATURES:
-        print(f"[제외된 피처] {EXCLUDED_FEATURES}")
     df = load_and_label(csv_path, real_dir=args.real_dir)
     if args.remove_outliers:
         df = remove_outliers_iqr(df, ALL_FEATURES)
@@ -827,7 +825,7 @@ def _run(args, csv_path: str, out_dir: Path, stamp: str):
         "tol": args.tol,
         "n_splits": args.n_splits,
         "class_weight": class_weight_multipliers or None,
-        "dropped": EXCLUDED_FEATURES,
+        "dropped": [],
         "n_total": len(df),
         "n_train": len(df_train),
         "n_test": len(df_test),
@@ -852,7 +850,7 @@ def _run(args, csv_path: str, out_dir: Path, stamp: str):
     }
     ctx["summary_text"] = build_summary_text(ctx)
 
-    md_path = out_dir / "train_classifier4_results.md"
+    md_path = out_dir / "select_features_results.md"
     md_path.write_text(build_markdown_report(ctx), encoding="utf-8")
 
     print("\n=== 요약 ===")

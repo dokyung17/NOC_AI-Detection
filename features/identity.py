@@ -75,9 +75,7 @@ class ArcFaceModel:
 
 def empty_identity_features() -> Dict[str, float]:
     return {
-        "identity_sim_mean": np.nan,
         "identity_sim_std": np.nan,
-        "identity_sim_min": np.nan,
     }
 
 
@@ -199,9 +197,7 @@ def aggregate_identity_sims(embeddings: Sequence[np.ndarray]) -> Dict[str, float
     if sims.size == 0:
         return empty_identity_features()
     return {
-        "identity_sim_mean": float(np.mean(sims)),
         "identity_sim_std": float(np.std(sims)),
-        "identity_sim_min": float(np.min(sims)),
     }
 
 
@@ -237,5 +233,5 @@ if __name__ == "__main__":
     assert cosine_similarity(a, a) > 0.99
     feats = aggregate_identity_sims([a, b, c])
     assert set(feats) == set(empty_identity_features())
-    assert feats["identity_sim_min"] <= feats["identity_sim_mean"]
+    assert np.isfinite(feats["identity_sim_std"])
     print("identity smoke ok", feats)

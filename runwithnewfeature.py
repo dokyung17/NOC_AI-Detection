@@ -207,7 +207,7 @@ def _print_progress(done: int, total: int, row: Dict[str, object]) -> None:
             f"D3={_fmt_metric(row.get('d3_temporal_score'))} | "
             f"HF={_fmt_metric(row.get('highfreq_score'))} | "
             f"bnd={_fmt_metric(row.get('boundary_score_mean'))} | "
-            f"id={_fmt_metric(row.get('identity_sim_mean'))}"
+            f"id={_fmt_metric(row.get('identity_sim_std'))}"
         )
     else:
         print(f"  ERROR: {row.get('error')}")
