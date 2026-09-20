@@ -19,8 +19,12 @@ real / diffusion / deepfake 3진 분류 파이프라인 (XGBoost + SHAP)
     4. train 내부 5-fold 교차검증으로 학습 중 성능 확인
     5. train 으로만 최종 모델 학습 후 test set 평가
     6. confusion matrix / SHAP / Markdown 보고서를 timestamp 폴더에 저장
+    7. (옵션) weighted AUC 기반 선택적 확률 재판정
+       - Diffusion: rPPG feature expert
+       - Deepfake: D3/high-frequency feature expert
+       - 확률이 애매한 영상만 expert blend 또는 soft voting
 """
-from __future__ import annotations
+
 import argparse
 import re
 import sys
@@ -40,6 +44,7 @@ from sklearn.metrics import (
     accuracy_score,
     classification_report,
     confusion_matrix,
+    log_loss,
     precision_recall_fscore_support,
     roc_auc_score,
 )
@@ -95,6 +100,19 @@ FEATURE_COLS = [
     "identity_sim_std",
 ]
 
+# 미팅에서 정한 class-specific feature family.
+RPPG_FEATURE_COLS = [
+    "absdiff_std",
+    "bvp_std",
+    "patch_corr_mean",
+    "patch_signal_std_mean",
+]
+
+DEEPFAKE_FEATURE_COLS = [
+    "d3_temporal_score",
+    "highfreq_score",
+]
+
 CLASS_NAMES = ["real", "diffusion", "deepfake"]
 DISPLAY_ORDER = ["real", "deepfake", "diffusion"]
 DISPLAY_LABEL = {"real": "Real", "deepfake": "Deepfake", "diffusion": "Diffusion"}
@@ -130,8 +148,17 @@ def load_real_names(real_dir: str | Path) -> set[str]:
 
 
 def load_and_label(csv_path: str, real_dir: str | Path = DEFAULT_REAL_DIR) -> pd.DataFrame:
-    """CSV를 읽고 핵심 피처만 남긴 뒤, real 폴더 + 파일명 규칙으로 3그룹 라벨을 붙인다."""
-    df = pd.read_csv(csv_path)
+    """CSV/Excel을 읽고 핵심 피처만 남긴 뒤 파일명 규칙으로 3그룹 라벨을 붙인다."""
+    suffix = Path(csv_path).suffix.lower()
+    if suffix == ".csv":
+        df = pd.read_csv(csv_path)
+    elif suffix in {".xlsx", ".xls"}:
+        try:
+            df = pd.read_excel(csv_path)
+        except ImportError as exc:
+            raise SystemExit("Excel 입력에는 openpyxl이 필요합니다: pip install openpyxl") from exc
+    else:
+        raise ValueError("입력 파일은 .csv, .xlsx, .xls 형식이어야 합니다.")
     real_names = load_real_names(real_dir)
 
     reduced = df[["video_name"]].copy()
@@ -223,6 +250,157 @@ def _sample_weights(y: np.ndarray, class_weight_multipliers: dict = None) -> np.
     return np.array([weight_map[v] for v in y])
 
 
+def _make_binary_xgb(random_state: int = 42):
+    """Class-specific expert용 이진 XGBoost."""
+    from xgboost import XGBClassifier
+
+    return XGBClassifier(
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_lambda=1.0,
+        missing=np.nan,
+        random_state=random_state,
+        n_jobs=-1,
+        objective="binary:logistic",
+        eval_metric="logloss",
+    )
+
+
+def _binary_weights(y_binary: np.ndarray, negative_name: str, positive_name: str,
+                    class_weight_multipliers: dict = None) -> np.ndarray:
+    """이진 expert에도 balanced weight와 사용자 class multiplier를 적용한다."""
+    class_weight_multipliers = class_weight_multipliers or {}
+    counts = np.bincount(y_binary, minlength=2)
+    if np.any(counts == 0):
+        raise ValueError(f"expert 학습에 두 클래스가 필요합니다: {negative_name}/{positive_name}")
+    balanced = len(y_binary) / (2.0 * counts)
+    multiplier = np.array([
+        class_weight_multipliers.get(negative_name, 1.0),
+        class_weight_multipliers.get(positive_name, 1.0),
+    ])
+    return (balanced * multiplier)[y_binary]
+
+
+def fit_probability_models(df_train: pd.DataFrame,
+                           class_weight_multipliers: dict = None,
+                           random_state: int = 42) -> dict:
+    """기본 3진 모델과 재판정용 expert 3개를 train data만으로 학습한다."""
+    class_to_idx, _ = build_class_maps(CLASS_NAMES)
+    y = df_train["group"].to_numpy()
+    y_idx = encode_labels(y, class_to_idx)
+
+    base_model = _make_multiclass_xgb(len(CLASS_NAMES), random_state)
+    base_model.fit(
+        df_train[FEATURE_COLS].to_numpy(float),
+        y_idx,
+        sample_weight=_sample_weights(y, class_weight_multipliers),
+    )
+
+    # Diffusion expert: rPPG family만 사용하여 Real과 Diffusion을 비교.
+    diff_mask = np.isin(y, ["real", "diffusion"])
+    y_diff = (y[diff_mask] == "diffusion").astype(int)
+    diffusion_expert = _make_binary_xgb(random_state + 1)
+    diffusion_expert.fit(
+        df_train.loc[diff_mask, RPPG_FEATURE_COLS].to_numpy(float),
+        y_diff,
+        sample_weight=_binary_weights(
+            y_diff, "real", "diffusion", class_weight_multipliers
+        ),
+    )
+
+    # Deepfake expert: D3와 high-frequency만 사용하여 Real과 Deepfake를 비교.
+    deep_mask = np.isin(y, ["real", "deepfake"])
+    y_deep = (y[deep_mask] == "deepfake").astype(int)
+    deepfake_expert = _make_binary_xgb(random_state + 2)
+    deepfake_expert.fit(
+        df_train.loc[deep_mask, DEEPFAKE_FEATURE_COLS].to_numpy(float),
+        y_deep,
+        sample_weight=_binary_weights(
+            y_deep, "real", "deepfake", class_weight_multipliers
+        ),
+    )
+
+    # Soft voting의 세 번째 표: 전체 feature 기반 Diffusion vs Deepfake.
+    pair_mask = np.isin(y, ["deepfake", "diffusion"])
+    y_pair = (y[pair_mask] == "diffusion").astype(int)
+    pairwise_model = _make_binary_xgb(random_state + 3)
+    pairwise_model.fit(
+        df_train.loc[pair_mask, FEATURE_COLS].to_numpy(float),
+        y_pair,
+        sample_weight=_binary_weights(
+            y_pair, "deepfake", "diffusion", class_weight_multipliers
+        ),
+    )
+    return {
+        "base_model": base_model,
+        "diffusion_expert": diffusion_expert,
+        "deepfake_expert": deepfake_expert,
+        "pairwise_model": pairwise_model,
+    }
+
+
+def predict_probability_parts(models: dict, df: pd.DataFrame) -> dict:
+    return {
+        "base": models["base_model"].predict_proba(
+            df[FEATURE_COLS].to_numpy(float)
+        ),
+        "diffusion_evidence": models["diffusion_expert"].predict_proba(
+            df[RPPG_FEATURE_COLS].to_numpy(float)
+        )[:, 1],
+        "deepfake_evidence": models["deepfake_expert"].predict_proba(
+            df[DEEPFAKE_FEATURE_COLS].to_numpy(float)
+        )[:, 1],
+        "pairwise_diffusion": models["pairwise_model"].predict_proba(
+            df[FEATURE_COLS].to_numpy(float)
+        )[:, 1],
+    }
+
+
+def refine_probabilities(parts: dict, config: dict):
+    """Real 확률은 유지하고 애매한 표본의 Diffusion/Deepfake 확률만 재분배한다."""
+    base = np.asarray(parts["base"], dtype=float)
+    final = base.copy()
+    if config["mode"] == "baseline":
+        return final, np.zeros(len(base), dtype=bool)
+
+    # 내부 class 순서: real=0, diffusion=1, deepfake=2.
+    top_two = np.argsort(base, axis=1)[:, -2:]
+    fake_pair_on_top = np.all(
+        np.sort(top_two, axis=1) == np.array([1, 2]), axis=1
+    )
+    probability_margin = np.abs(base[:, 1] - base[:, 2])
+    ambiguous = fake_pair_on_top & (probability_margin <= config["margin"])
+
+    eps = 1e-12
+    base_pair = base[:, [1, 2]]
+    base_pair /= np.clip(base_pair.sum(axis=1, keepdims=True), eps, None)
+
+    expert_pair = np.column_stack([
+        parts["diffusion_evidence"], parts["deepfake_evidence"]
+    ])
+    expert_pair /= np.clip(expert_pair.sum(axis=1, keepdims=True), eps, None)
+
+    pairwise_pair = np.column_stack([
+        parts["pairwise_diffusion"], 1.0 - parts["pairwise_diffusion"]
+    ])
+
+    if config["mode"] == "expert_blend":
+        alpha = config["alpha"]
+        refined_pair = (1.0 - alpha) * base_pair + alpha * expert_pair
+    elif config["mode"] == "soft_vote":
+        refined_pair = (base_pair + expert_pair + pairwise_pair) / 3.0
+    else:
+        raise ValueError(f"지원하지 않는 refinement mode: {config['mode']}")
+
+    fake_mass = base[:, 1] + base[:, 2]
+    final[ambiguous, 1:3] = refined_pair[ambiguous] * fake_mass[ambiguous, None]
+    final /= final.sum(axis=1, keepdims=True)
+    return final, ambiguous
+
+
 def compute_metrics(y_true_str: np.ndarray, y_pred_str: np.ndarray, proba: np.ndarray) -> dict:
     class_to_idx, _ = build_class_maps(CLASS_NAMES)
     y_true_idx = encode_labels(y_true_str, class_to_idx)
@@ -243,6 +421,14 @@ def compute_metrics(y_true_str: np.ndarray, y_pred_str: np.ndarray, proba: np.nd
     except ValueError:
         auc_macro = float("nan")
         auc_weighted = float("nan")
+    per_class_auc = {}
+    for i, class_name in enumerate(CLASS_NAMES):
+        try:
+            per_class_auc[class_name] = roc_auc_score(
+                (y_true_idx == i).astype(int), proba[:, i]
+            )
+        except ValueError:
+            per_class_auc[class_name] = float("nan")
     return {
         "accuracy": accuracy_score(y_true_str, y_pred_str),
         "precision_macro": p_macro,
@@ -253,7 +439,155 @@ def compute_metrics(y_true_str: np.ndarray, y_pred_str: np.ndarray, proba: np.nd
         "weighted_f1": f1_w,
         "macro_auc": auc_macro,
         "weighted_auc": auc_weighted,
+        "auc_real": per_class_auc["real"],
+        "auc_deepfake": per_class_auc["deepfake"],
+        "auc_diffusion": per_class_auc["diffusion"],
+        "log_loss": log_loss(y_true_idx, proba, labels=labels_idx),
     }
+
+
+def _refinement_candidates(mode: str = "auto", fixed_margin: float | None = None):
+    margins = [fixed_margin] if fixed_margin is not None else [
+        0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.30, 0.40
+    ]
+    candidates = [{"mode": "baseline", "margin": 0.0, "alpha": 0.0}]
+    if mode in {"auto", "expert_blend"}:
+        for margin in margins:
+            for alpha in (0.25, 0.50, 0.75):
+                candidates.append({
+                    "mode": "expert_blend", "margin": margin, "alpha": alpha
+                })
+    if mode in {"auto", "soft_vote"}:
+        for margin in margins:
+            candidates.append({
+                "mode": "soft_vote", "margin": margin, "alpha": 0.0
+            })
+    return candidates
+
+
+def choose_refinement_config(y_true: np.ndarray, parts: dict,
+                             mode: str = "auto",
+                             fixed_margin: float | None = None,
+                             min_weighted_auc_gain: float = 0.0):
+    """Train OOF weighted AUC를 최우선으로 재판정 설정을 선택한다."""
+    _, idx_to_class = build_class_maps(CLASS_NAMES)
+    rows = []
+    for config in _refinement_candidates(mode, fixed_margin):
+        proba, rejudged = refine_probabilities(parts, config)
+        pred = decode_labels(np.argmax(proba, axis=1), idx_to_class)
+        metrics = compute_metrics(y_true, pred, proba)
+        rows.append({
+            **config,
+            **metrics,
+            "rejudged_count": int(rejudged.sum()),
+        })
+
+    table = pd.DataFrame(rows).sort_values(
+        ["weighted_auc", "macro_auc", "macro_f1", "log_loss"],
+        ascending=[False, False, False, True],
+        kind="stable",
+    ).reset_index(drop=True)
+    best = table.iloc[0]
+    baseline = table.loc[table["mode"] == "baseline"].iloc[0]
+    gain = float(best["weighted_auc"] - baseline["weighted_auc"])
+
+    if best["mode"] != "baseline" and gain < min_weighted_auc_gain:
+        selected = {"mode": "baseline", "margin": 0.0, "alpha": 0.0}
+        reason = (
+            f"weighted AUC 향상 {gain:.6f} < 최소 기준 "
+            f"{min_weighted_auc_gain:.6f}: baseline 유지"
+        )
+    else:
+        selected = {
+            "mode": str(best["mode"]),
+            "margin": float(best["margin"]),
+            "alpha": float(best["alpha"]),
+        }
+        reason = f"train OOF weighted AUC 기준 최적 설정: gain={gain:.6f}"
+    return selected, table, reason
+
+
+def make_oof_probability_parts(df_train: pd.DataFrame, n_splits: int = 5,
+                               random_state: int = 42,
+                               class_weight_multipliers: dict = None) -> dict:
+    """각 train 행을 해당 행을 보지 않은 fold model로 예측한다."""
+    y = df_train["group"].to_numpy()
+    oof = {
+        "base": np.zeros((len(df_train), 3), dtype=float),
+        "diffusion_evidence": np.zeros(len(df_train), dtype=float),
+        "deepfake_evidence": np.zeros(len(df_train), dtype=float),
+        "pairwise_diffusion": np.zeros(len(df_train), dtype=float),
+    }
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    for train_idx, val_idx in cv.split(df_train, y):
+        models = fit_probability_models(
+            df_train.iloc[train_idx],
+            class_weight_multipliers=class_weight_multipliers,
+            random_state=random_state,
+        )
+        fold_parts = predict_probability_parts(models, df_train.iloc[val_idx])
+        for key in oof:
+            oof[key][val_idx] = fold_parts[key]
+    return oof
+
+
+def evaluate_refinement_on_train(df_train: pd.DataFrame, out_dir: Path,
+                                 n_splits: int = 5,
+                                 random_state: int = 42,
+                                 class_weight_multipliers: dict = None,
+                                 mode: str = "auto",
+                                 fixed_margin: float | None = None,
+                                 min_weighted_auc_gain: float = 0.0):
+    """Test를 보지 않고 train OOF에서 refinement를 선택한다."""
+    y_train = df_train["group"].to_numpy()
+    parts = make_oof_probability_parts(
+        df_train,
+        n_splits=n_splits,
+        random_state=random_state,
+        class_weight_multipliers=class_weight_multipliers,
+    )
+    selected, tuning, reason = choose_refinement_config(
+        y_train,
+        parts,
+        mode=mode,
+        fixed_margin=fixed_margin,
+        min_weighted_auc_gain=min_weighted_auc_gain,
+    )
+    tuning.to_csv(out_dir / "refinement_tuning.csv", index=False, encoding="utf-8-sig")
+    baseline_row = tuning.loc[tuning["mode"] == "baseline"].iloc[0]
+    selected_proba, selected_mask = refine_probabilities(parts, selected)
+    _, idx_to_class = build_class_maps(CLASS_NAMES)
+    selected_pred = decode_labels(np.argmax(selected_proba, axis=1), idx_to_class)
+    selected_metrics = compute_metrics(y_train, selected_pred, selected_proba)
+
+    print("\n=== train OOF 확률 재판정 설정 탐색 ===")
+    print(f"Baseline weighted AUC: {baseline_row['weighted_auc']:.4f}")
+    print(f"Selected weighted AUC: {selected_metrics['weighted_auc']:.4f}")
+    print(f"선택 설정: {selected}")
+    print(f"선택 근거: {reason}")
+    print(f"OOF 재판정 영상: {int(selected_mask.sum())}/{len(df_train)}")
+    print(f"[저장 완료] 설정 탐색 결과 -> {(out_dir / 'refinement_tuning.csv').as_posix()}")
+    return selected, tuning, reason
+
+
+def train_probability_bundle(df_train: pd.DataFrame, out_path: str, config: dict,
+                             random_state: int = 42,
+                             class_weight_multipliers: dict = None):
+    models = fit_probability_models(
+        df_train,
+        class_weight_multipliers=class_weight_multipliers,
+        random_state=random_state,
+    )
+    joblib.dump({
+        **models,
+        "feature_cols": FEATURE_COLS,
+        "rppg_feature_cols": RPPG_FEATURE_COLS,
+        "deepfake_feature_cols": DEEPFAKE_FEATURE_COLS,
+        "class_names": CLASS_NAMES,
+        "refinement_config": config,
+    }, out_path)
+    print(f"\n[저장 완료] 기본+expert 통합 모델 -> {out_path}")
+    return models
 
 
 def evaluate_cv(X: np.ndarray, y: np.ndarray, class_names, n_splits: int = 5, random_state: int = 42,
@@ -283,6 +617,7 @@ def evaluate_cv(X: np.ndarray, y: np.ndarray, class_names, n_splits: int = 5, ra
         print(f"Accuracy: {metrics['accuracy']:.3f}")
         print(f"Macro F1: {metrics['macro_f1']:.3f}")
         print(f"Macro AUC: {metrics['macro_auc']:.3f}")
+        print(f"Weighted AUC: {metrics['weighted_auc']:.3f}")
         print(classification_report(y, y_pred, target_names=class_names, labels=class_names, digits=3))
         print("Confusion matrix (행=실제, 열=예측):")
         print(pd.DataFrame(confusion_matrix(y, y_pred, labels=class_names),
@@ -613,6 +948,11 @@ def build_markdown_report(ctx: dict) -> str:
     a(_md_table(ctx["cv_metrics_table"]))
     a("")
     a("## 4. Final Model Performance (test set)\n")
+    if ctx.get("baseline_metrics_table") is not None:
+        a("### 4.1 Baseline 3-class XGBoost\n")
+        a(_md_table(ctx["baseline_metrics_table"]))
+        a("")
+        a("### 4.2 Probability-refined model\n")
     a(_md_table(ctx["final_metrics_table"]))
     a("")
     a("## 5. Per-Class Performance\n")
@@ -651,10 +991,17 @@ def build_summary_text(ctx: dict) -> str:
         f"- 고정 feature {len(FEATURE_COLS)}개로 train {ctx['n_train']} / test {ctx['n_test']} 를 사용했다.",
         f"- train 내부 CV Macro F1 은 {cv['macro_f1']:.4f}, Macro AUC 는 {cv['macro_auc']:.4f} 였다.",
         f"- test Accuracy 는 {m['accuracy']:.4f}, Macro F1 은 {m['macro_f1']:.4f}, "
-        f"Macro AUC 는 {m['macro_auc']:.4f} 를 기록했다.",
+        f"Macro AUC 는 {m['macro_auc']:.4f}, Weighted AUC 는 {m['weighted_auc']:.4f} 를 기록했다.",
         f"- SHAP 에서 가장 영향력이 높은 feature 는 `{top['feature']}` "
         f"(mean |SHAP| = {top['mean_abs_shap']:.4f}) 였다.",
     ]
+    if ctx.get("baseline_metrics") is not None and ctx.get("refinement_config", {}).get("mode") != "baseline":
+        b = ctx["baseline_metrics"]
+        lines.insert(
+            3,
+            f"- 확률 재판정 전/후 test Weighted AUC 는 {b['weighted_auc']:.4f} → "
+            f"{m['weighted_auc']:.4f} 이며, {ctx['rejudged_count']}개 영상을 재판정했다.",
+        )
     return "\n".join(lines)
 
 
@@ -670,6 +1017,10 @@ def metrics_table(metrics: dict) -> pd.DataFrame:
             ("Weighted F1", metrics["weighted_f1"]),
             ("Macro AUC", metrics["macro_auc"]),
             ("Weighted AUC", metrics["weighted_auc"]),
+            ("Real AUC", metrics["auc_real"]),
+            ("Deepfake AUC", metrics["auc_deepfake"]),
+            ("Diffusion AUC", metrics["auc_diffusion"]),
+            ("Log Loss", metrics["log_loss"]),
         ],
         columns=["Metric", "Score"],
     )
@@ -677,7 +1028,8 @@ def metrics_table(metrics: dict) -> pd.DataFrame:
 
 def main():
     parser = argparse.ArgumentParser(description="real/diffusion/deepfake 3진 분류 (XGBoost + SHAP)")
-    parser.add_argument("--csv", required=True, help="입력 CSV 경로 (unified_features_*.csv)")
+    parser.add_argument("--csv", required=True,
+                         help="입력 CSV/Excel 경로 (unified_features_*.csv 또는 .xlsx)")
     parser.add_argument("--real-dir", default=str(DEFAULT_REAL_DIR),
                          help="진짜 영상 폴더 (여기 있는 파일명만 real로 라벨링)")
     parser.add_argument("--test-size", type=float, default=0.2, help="최종 평가용 test 비율 (기본 0.2)")
@@ -692,6 +1044,15 @@ def main():
                               "'diffusion=3.0,real=1.2'")
     parser.add_argument("--diagnose", action="store_true",
                          help="오분류된 영상을 찾아 CSV로 저장하고, 생성모델/기법별 오류율을 출력")
+    parser.add_argument("--probability-refinement", action="store_true",
+                         help="weighted AUC 기반 class-specific expert 재판정 적용")
+    parser.add_argument("--refinement-mode",
+                         choices=["auto", "expert_blend", "soft_vote"], default="auto",
+                         help="auto는 train OOF weighted AUC로 blend/voting 중 선택")
+    parser.add_argument("--ambiguity-threshold", type=float, default=None,
+                         help="Diffusion/Deepfake 확률 차이 기준. 생략하면 자동 탐색")
+    parser.add_argument("--min-weighted-auc-gain", type=float, default=0.0,
+                         help="재판정을 채택하기 위한 train OOF weighted AUC 최소 향상폭")
     parser.add_argument("--remove-outliers", action="store_true",
                          help="IQR 기반 이상치 제거 적용 (기본: 미적용)")
     parser.add_argument("--model-out", default=None, help="최종 모델 저장 경로 (기본: 결과 폴더 안)")
@@ -766,22 +1127,64 @@ def _run(args, out_dir: Path, stamp: str):
             out_csv=str(out_dir / "misclassified_videos.csv"),
         )
 
+    refinement_config = {"mode": "baseline", "margin": 0.0, "alpha": 0.0}
+    refinement_reason = "probability refinement 비활성화"
+    if args.probability_refinement:
+        refinement_config, _, refinement_reason = evaluate_refinement_on_train(
+            df_train,
+            out_dir,
+            n_splits=args.n_splits,
+            random_state=args.random_state,
+            class_weight_multipliers=class_weight_multipliers,
+            mode=args.refinement_mode,
+            fixed_margin=args.ambiguity_threshold,
+            min_weighted_auc_gain=args.min_weighted_auc_gain,
+        )
+
     print("\n=== train 데이터로 최종 모델 학습 ===")
     model_out = args.model_out or str(out_dir / "xgb_model_3class.joblib")
-    model = train_final_model(
-        X_train, y_train, CLASS_NAMES, model_out,
-        random_state=args.random_state,
-        class_weight_multipliers=class_weight_multipliers,
-    )
+    if args.probability_refinement:
+        probability_models = train_probability_bundle(
+            df_train,
+            model_out,
+            refinement_config,
+            random_state=args.random_state,
+            class_weight_multipliers=class_weight_multipliers,
+        )
+        model = probability_models["base_model"]
+    else:
+        probability_models = None
+        model = train_final_model(
+            X_train, y_train, CLASS_NAMES, model_out,
+            random_state=args.random_state,
+            class_weight_multipliers=class_weight_multipliers,
+        )
 
     _, idx_to_class = build_class_maps(CLASS_NAMES)
-    proba = model.predict_proba(X_test)
-    y_pred = decode_labels(model.predict(X_test), idx_to_class)
+    baseline_proba = model.predict_proba(X_test)
+    baseline_pred = decode_labels(model.predict(X_test), idx_to_class)
+    baseline_metrics = compute_metrics(y_test, baseline_pred, baseline_proba)
+
+    if args.probability_refinement:
+        test_parts = predict_probability_parts(probability_models, df_test)
+        proba, rejudged = refine_probabilities(test_parts, refinement_config)
+        y_pred = decode_labels(np.argmax(proba, axis=1), idx_to_class)
+    else:
+        proba = baseline_proba
+        y_pred = baseline_pred
+        rejudged = np.zeros(len(df_test), dtype=bool)
+
     final_metrics = compute_metrics(y_test, y_pred, proba)
     final_metrics_table = metrics_table(final_metrics)
+    baseline_metrics_table = metrics_table(baseline_metrics)
     cv_metrics_table = metrics_table(cv_metrics)
 
     print("\n=== test set 평가 ===")
+    if args.probability_refinement:
+        print("\n[Baseline 3-class XGBoost]")
+        print(baseline_metrics_table.round(4).to_string(index=False))
+        print(f"\n[확률 재판정: {refinement_config}]")
+        print(f"재판정 영상: {int(rejudged.sum())}/{len(df_test)}")
     print(final_metrics_table.round(4).to_string(index=False))
     clf_report = classification_report(
         y_test, y_pred, labels=DISPLAY_ORDER,
@@ -797,15 +1200,27 @@ def _run(args, out_dir: Path, stamp: str):
     print(cm_df.to_string())
 
     final_metrics_table.to_csv(out_dir / "final_metrics.csv", index=False, encoding="utf-8-sig")
+    baseline_metrics_table.to_csv(
+        out_dir / "baseline_metrics.csv", index=False, encoding="utf-8-sig"
+    )
     cv_metrics_table.to_csv(out_dir / "cv_metrics.csv", index=False, encoding="utf-8-sig")
     per_class.to_csv(out_dir / "per_class_metrics.csv", index=False, encoding="utf-8-sig")
     cm_df.to_csv(out_dir / "confusion_matrix.csv", encoding="utf-8-sig")
 
     pred_df = df_test[["video_name"]].copy()
     pred_df["true_label"] = y_test
-    pred_df["predicted"] = y_pred
-    for i, c in enumerate(CLASS_NAMES):
+    pred_df["baseline_prediction"] = baseline_pred
+    pred_df["final_prediction"] = y_pred
+    pred_df["rejudged"] = rejudged
+    pred_df["probability_margin"] = np.abs(baseline_proba[:, 1] - baseline_proba[:, 2])
+    class_to_idx, _ = build_class_maps(CLASS_NAMES)
+    for c in DISPLAY_ORDER:
+        i = class_to_idx[c]
+        pred_df[f"base_prob_{c}"] = baseline_proba[:, i]
+    for c in DISPLAY_ORDER:
+        i = class_to_idx[c]
         pred_df[f"prob_{c}"] = proba[:, i]
+    pred_df["confidence"] = proba.max(axis=1)
     pred_df.to_csv(out_dir / "test_predictions.csv", index=False, encoding="utf-8-sig")
 
     shap_importance, shap_per_class, shap_class_plots = run_shap_analysis(
@@ -844,6 +1259,11 @@ def _run(args, out_dir: Path, stamp: str):
         "cv_metrics_table": cv_metrics_table,
         "final_metrics": final_metrics,
         "final_metrics_table": final_metrics_table,
+        "baseline_metrics": baseline_metrics,
+        "baseline_metrics_table": baseline_metrics_table if args.probability_refinement else None,
+        "refinement_config": refinement_config,
+        "refinement_reason": refinement_reason,
+        "rejudged_count": int(rejudged.sum()),
         "per_class": per_class,
         "clf_report": clf_report,
         "cm_df": cm_df,

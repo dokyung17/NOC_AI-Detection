@@ -1,0 +1,6 @@
+﻿video_name,true_label,baseline_pred,refined_pred,baseline_correct,refined_correct,changed,change_result,baseline_prob_real,baseline_prob_diffusion,baseline_prob_deepfake,binary_prob_fake,refined_prob_fake
+sora_0035.mp4,diffusion,real,diffusion,False,True,True,fixed,0.5375326,0.3264361,0.13603128,0.61400646,0.4927752
+id19_0008.mp4,real,real,deepfake,True,False,True,broken,0.5105154,0.2062161,0.2832685,0.6168465,0.514957
+sora_0036.mp4,diffusion,real,diffusion,False,True,True,fixed,0.41497824,0.3358325,0.2491893,0.8691681,0.64185107
+964.mp4,real,real,diffusion,True,False,True,broken,0.56094354,0.3974209,0.04163558,0.6842793,0.48810107
+id16_0006.mp4,real,real,deepfake,True,False,True,broken,0.5355524,0.018851465,0.4455962,0.660964,0.5037509

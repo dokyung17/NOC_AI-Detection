@@ -1,0 +1,11 @@
+﻿rank,feature,mean_abs_shap
+1,identity_sim_std,0.6389599
+2,bvp_std,0.6057508
+3,highfreq_score,0.31975594
+4,boundary_score_std,0.31181458
+5,patch_signal_std_mean,0.27075973
+6,boundary_score_mean,0.24061435
+7,d3_temporal_score,0.21814439
+8,patch_corr_mean,0.1834986
+9,boundary_score_max,0.17984423
+10,absdiff_std,0.104505524

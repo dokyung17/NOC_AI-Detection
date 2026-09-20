@@ -1,0 +1,175 @@
+[로드] results\unified_features_20260911_024351.csv
+[real 폴더] data\videos\real -> 335개
+group
+deepfake     248
+diffusion    217
+real         335
+dtype: int64
+
+[데이터 분리] 전체 800개 -> train 480 / test 320
+train: {'real': 201, 'deepfake': 149, 'diffusion': 130}
+test : {'real': 134, 'deepfake': 99, 'diffusion': 87}
+
+=== train 내부 5-fold 교차검증 ===
+  fold 1: accuracy = 0.698
+  fold 2: accuracy = 0.771
+  fold 3: accuracy = 0.760
+  fold 4: accuracy = 0.729
+  fold 5: accuracy = 0.740
+
+=== train 내부 5-fold 교차검증 결과 ===
+Accuracy: 0.740
+Macro F1: 0.740
+Macro AUC: 0.888
+              precision    recall  f1-score   support
+
+        real      0.762     0.731     0.746       201
+   diffusion      0.770     0.746     0.758       130
+    deepfake      0.689     0.745     0.716       149
+
+    accuracy                          0.740       480
+   macro avg      0.740     0.741     0.740       480
+weighted avg      0.741     0.740     0.740       480
+
+Confusion matrix (행=실제, 열=예측):
+           real  diffusion  deepfake
+real        147         20        34
+diffusion    17         97        16
+deepfake     29          9       111
+
+=== train 데이터로 최종 모델 학습 ===
+
+[저장 완료] 최종 모델 -> results\train_classifier2_20260917_221905\xgb_model_3class.joblib
+
+=== test set 평가 ===
+            Metric  Score
+          Accuracy 0.7688
+   Macro Precision 0.7751
+      Macro Recall 0.7589
+          Macro F1 0.7628
+Weighted Precision 0.7736
+   Weighted Recall 0.7688
+       Weighted F1 0.7676
+         Macro AUC 0.9098
+      Weighted AUC 0.9087
+
+=== Classification Report (test set) ===
+              precision    recall  f1-score   support
+
+        Real      0.779     0.813     0.796       134
+    Deepfake      0.721     0.808     0.762        99
+   Diffusion      0.826     0.655     0.731        87
+
+    accuracy                          0.769       320
+   macro avg      0.775     0.759     0.763       320
+weighted avg      0.774     0.769     0.768       320
+
+=== Confusion Matrix (행=실제, 열=예측) ===
+           Real  Deepfake  Diffusion
+Real        109        15         10
+Deepfake     17        80          2
+Diffusion    14        16         57
+
+=== SHAP Feature Importance (test set) ===
+identity_sim_std             0.6390
+bvp_std                      0.6058
+highfreq_score               0.3198
+boundary_score_std           0.3118
+patch_signal_std_mean        0.2708
+boundary_score_mean          0.2406
+d3_temporal_score            0.2181
+patch_corr_mean              0.1835
+boundary_score_max           0.1798
+absdiff_std                  0.1045
+
+=== 클래스별 mean |SHAP| ===
+              feature  mean_abs_shap_real  mean_abs_shap_diffusion  mean_abs_shap_deepfake  mean_abs_shap_overall
+     identity_sim_std              0.6843                   0.2196                  1.0130                 0.6390
+              bvp_std              0.4018                   1.2237                  0.1918                 0.6058
+       highfreq_score              0.3139                   0.3527                  0.2927                 0.3198
+   boundary_score_std              0.1932                   0.6228                  0.1194                 0.3118
+patch_signal_std_mean              0.2752                   0.2784                  0.2587                 0.2708
+  boundary_score_mean              0.1612                   0.1559                  0.4048                 0.2406
+    d3_temporal_score              0.2080                   0.2015                  0.2449                 0.2181
+      patch_corr_mean              0.1672                   0.1600                  0.2232                 0.1835
+   boundary_score_max              0.1007                   0.2556                  0.1832                 0.1798
+          absdiff_std              0.0687                   0.0764                  0.1685                 0.1045
+
+=== 전역 피처 중요도 (|SHAP| 평균) ===
+  identity_sim_std          0.6390
+  bvp_std                   0.6058
+  highfreq_score            0.3198
+  boundary_score_std        0.3118
+  patch_signal_std_mean     0.2708
+  boundary_score_mean       0.2406
+  d3_temporal_score         0.2181
+  patch_corr_mean           0.1835
+  boundary_score_max        0.1798
+  absdiff_std               0.1045
+
+=== test 예시 영상 3개에 대한 개별 설명 ===
+
+--- kling_0018.mp4 (실제 라벨: diffusion) ---
+
+예측: diffusion (확률 99.1%)
+  - real: 0.9%
+  - diffusion: 99.1%
+  - deepfake: 0.0%
+
+'diffusion' 예측에 대한 피처 기여도 (영향 큰 순):
+  + bvp_std                   값=0.0392   기여도=+1.4698
+  + patch_signal_std_mean     값=0.0935   기여도=+0.7396
+  + highfreq_score            값=0.0251   기여도=+0.5520
+  + boundary_score_std        값=4.5169   기여도=+0.3428
+  + boundary_score_mean       값=18.4029   기여도=+0.1448
+  + identity_sim_std          값=0.0190   기여도=+0.1299
+  + boundary_score_max        값=30.1581   기여도=+0.1188
+  - d3_temporal_score         값=1.1104   기여도=-0.1119
+  + absdiff_std               값=0.0101   기여도=+0.0980
+  + patch_corr_mean           값=0.1985   기여도=+0.0400
+
+--- 00098.mp4 (실제 라벨: real) ---
+
+예측: real (확률 99.0%)
+  - real: 99.0%
+  - diffusion: 0.5%
+  - deepfake: 0.5%
+
+'real' 예측에 대한 피처 기여도 (영향 큰 순):
+  + identity_sim_std          값=0.0113   기여도=+1.1057
+  + patch_signal_std_mean     값=0.4419   기여도=+0.6573
+  + bvp_std                   값=0.0943   기여도=+0.2829
+  + boundary_score_std        값=1.7730   기여도=+0.2510
+  - highfreq_score            값=0.0314   기여도=-0.2161
+  + d3_temporal_score         값=1.5792   기여도=+0.1628
+  - patch_corr_mean           값=0.1058   기여도=-0.0874
+  + boundary_score_mean       값=9.0616   기여도=+0.0497
+  - boundary_score_max        값=15.5659   기여도=-0.0215
+  - absdiff_std               값=0.0285   기여도=-0.0101
+
+--- 02_09__walking_down_street_outside_angry__6KUOFMZW.mp4 (실제 라벨: deepfake) ---
+
+예측: deepfake (확률 98.2%)
+  - real: 0.4%
+  - diffusion: 1.3%
+  - deepfake: 98.2%
+
+'deepfake' 예측에 대한 피처 기여도 (영향 큰 순):
+  + identity_sim_std          값=0.1665   기여도=+1.9186
+  + boundary_score_mean       값=5.1907   기여도=+0.5493
+  + patch_corr_mean           값=0.1312   기여도=+0.4508
+  + highfreq_score            값=0.0506   기여도=+0.3890
+  - bvp_std                   값=0.0391   기여도=-0.2445
+  + d3_temporal_score         값=2.6584   기여도=+0.1847
+  - absdiff_std               값=0.0137   기여도=-0.1635
+  + boundary_score_max        값=29.3898   기여도=+0.1104
+  + patch_signal_std_mean     값=0.1054   기여도=+0.1029
+  - boundary_score_std        값=3.8719   기여도=-0.0847
+
+=== 요약 ===
+- 고정 feature 10개로 train 480 / test 320 를 사용했다.
+- train 내부 CV Macro F1 은 0.7400, Macro AUC 는 0.8884 였다.
+- test Accuracy 는 0.7688, Macro F1 은 0.7628, Macro AUC 는 0.9098 를 기록했다.
+- SHAP 에서 가장 영향력이 높은 feature 는 `identity_sim_std` (mean |SHAP| = 0.6390) 였다.
+
+[저장 완료] Markdown 보고서 -> results/train_classifier2_20260917_221905/train_classifier2_results.md

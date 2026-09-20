@@ -20,7 +20,7 @@ real / diffusion / deepfake 3진 분류 파이프라인 (XGBoost + SHAP)
     5. train 으로만 최종 모델 학습 후 test set 평가
     6. confusion matrix / SHAP / Markdown 보고서를 timestamp 폴더에 저장
 """
-from __future__ import annotations
+
 import argparse
 import re
 import sys
@@ -93,6 +93,19 @@ FEATURE_COLS = [
     "boundary_score_std",
     "boundary_score_max",
     "identity_sim_std",
+]
+
+# SHAP 결과를 반영한 Real/Fake 보조 분류기 기본 피처
+# (현재 실험에서 영향도가 높았던 8개 피처)
+BINARY_SHAP_FEATURE_COLS = [
+    "identity_sim_std",
+    "bvp_std",
+    "boundary_score_std",
+    "highfreq_score",
+    "patch_signal_std_mean",
+    "boundary_score_mean",
+    "d3_temporal_score",
+    "boundary_score_max",
 ]
 
 CLASS_NAMES = ["real", "diffusion", "deepfake"]
@@ -675,6 +688,182 @@ def metrics_table(metrics: dict) -> pd.DataFrame:
     )
 
 
+
+def _make_binary_xgb(random_state: int = 42):
+    """Real(0) vs Fake(1: deepfake+diffusion) 전용 XGBoost."""
+    from xgboost import XGBClassifier
+
+    return XGBClassifier(
+        n_estimators=300,
+        max_depth=4,
+        learning_rate=0.05,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_lambda=1.0,
+        missing=np.nan,
+        random_state=random_state,
+        n_jobs=-1,
+        objective="binary:logistic",
+        eval_metric="logloss",
+    )
+
+
+def print_nan_report(df: pd.DataFrame, out_csv: Path):
+    """클래스별 feature NaN 비율을 출력/저장해 shortcut 가능성을 점검한다."""
+    rows = []
+    for group in CLASS_NAMES:
+        sub = df[df["group"] == group]
+        for feat in FEATURE_COLS:
+            rows.append({
+                "group": group,
+                "feature": feat,
+                "n": len(sub),
+                "nan_count": int(sub[feat].isna().sum()),
+                "nan_rate": float(sub[feat].isna().mean()),
+            })
+    report = pd.DataFrame(rows)
+    pivot = report.pivot(index="feature", columns="group", values="nan_rate")
+    print("\n=== 클래스별 NaN 비율 ===")
+    print((pivot * 100).round(1).astype(str).add("%").to_string())
+    report.to_csv(out_csv, index=False, encoding="utf-8-sig")
+    print(f"[저장 완료] NaN 비율 -> {out_csv.as_posix()}")
+    return report
+
+
+def get_multiclass_oof_proba(X: np.ndarray, y: np.ndarray, n_splits: int = 5,
+                              random_state: int = 42, class_weight_multipliers: dict = None):
+    """train 내부 OOF 3-class 확률. refinement 튜닝에만 사용한다."""
+    class_to_idx, _ = build_class_maps(CLASS_NAMES)
+    y_idx = encode_labels(y, class_to_idx)
+    sw = _sample_weights(y, class_weight_multipliers)
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    oof = np.zeros((len(y), len(CLASS_NAMES)), dtype=float)
+    for tr, va in cv.split(X, y_idx):
+        m = _make_multiclass_xgb(len(CLASS_NAMES), random_state)
+        m.fit(X[tr], y_idx[tr], sample_weight=sw[tr])
+        oof[va] = m.predict_proba(X[va])
+    return oof
+
+
+def get_binary_oof_proba(X: np.ndarray, y_binary: np.ndarray, n_splits: int = 5,
+                          random_state: int = 42):
+    """train 내부 OOF Real/Fake 확률."""
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    oof = np.zeros(len(y_binary), dtype=float)
+    for tr, va in cv.split(X, y_binary):
+        m = _make_binary_xgb(random_state)
+        # 클래스 불균형을 fold마다 자동 보정
+        n_pos = max(int((y_binary[tr] == 1).sum()), 1)
+        n_neg = max(int((y_binary[tr] == 0).sum()), 1)
+        sw = np.where(y_binary[tr] == 1, n_neg / n_pos, 1.0)
+        m.fit(X[tr], y_binary[tr], sample_weight=sw)
+        oof[va] = m.predict_proba(X[va])[:, 1]
+    return oof
+
+
+def train_binary_model(X: np.ndarray, y_binary: np.ndarray, out_path: Path,
+                       feature_cols, random_state: int = 42):
+    m = _make_binary_xgb(random_state)
+    n_pos = max(int((y_binary == 1).sum()), 1)
+    n_neg = max(int((y_binary == 0).sum()), 1)
+    sw = np.where(y_binary == 1, n_neg / n_pos, 1.0)
+    m.fit(X, y_binary, sample_weight=sw)
+    joblib.dump({
+        "model": m,
+        "feature_cols": list(feature_cols),
+        "classes": ["real", "fake"],
+    }, out_path)
+    print(f"[저장 완료] Real/Fake 보조 모델 -> {out_path.as_posix()}")
+    return m
+
+
+def make_refined_proba(proba3: np.ndarray, p_fake_binary: np.ndarray,
+                        alpha: float, threshold: float):
+    """
+    3-class의 Fake 확률과 binary Fake 확률을 결합한다.
+    Fake로 결정된 뒤 Deepfake/Diffusion 비율은 원 3-class 모델의 상대확률을 유지한다.
+    반환: refined_pred(str), refined_proba(3-class), p_fake_final
+    """
+    ci = {c: i for i, c in enumerate(CLASS_NAMES)}
+    p_real = proba3[:, ci["real"]]
+    p_diff = proba3[:, ci["diffusion"]]
+    p_deep = proba3[:, ci["deepfake"]]
+    p_fake3 = p_diff + p_deep
+    p_fake_final = alpha * p_fake3 + (1.0 - alpha) * p_fake_binary
+    p_fake_final = np.clip(p_fake_final, 0.0, 1.0)
+
+    denom = p_diff + p_deep
+    diff_share = np.divide(p_diff, denom, out=np.full_like(p_diff, 0.5), where=denom > 0)
+    deep_share = 1.0 - diff_share
+
+    refined_proba = np.zeros_like(proba3, dtype=float)
+    refined_proba[:, ci["real"]] = 1.0 - p_fake_final
+    refined_proba[:, ci["diffusion"]] = p_fake_final * diff_share
+    refined_proba[:, ci["deepfake"]] = p_fake_final * deep_share
+
+    is_fake = p_fake_final >= threshold
+    fake_kind = np.where(p_deep >= p_diff, "deepfake", "diffusion")
+    pred = np.where(is_fake, fake_kind, "real")
+    return pred.astype(object), refined_proba, p_fake_final
+
+
+def tune_refinement(y_train: np.ndarray, oof_proba3: np.ndarray, oof_p_fake_binary: np.ndarray):
+    """test를 보지 않고 train OOF에서 alpha와 threshold를 Macro F1 기준으로 선택."""
+    from sklearn.metrics import f1_score
+
+    rows = []
+    for alpha in np.arange(0.0, 1.0001, 0.05):
+        for threshold in np.arange(0.30, 0.7001, 0.01):
+            pred, _, _ = make_refined_proba(
+                oof_proba3, oof_p_fake_binary, float(alpha), float(threshold)
+            )
+            macro_f1 = f1_score(y_train, pred, labels=CLASS_NAMES, average="macro", zero_division=0)
+            acc = accuracy_score(y_train, pred)
+            rows.append((float(alpha), float(threshold), float(macro_f1), float(acc)))
+    result = pd.DataFrame(rows, columns=["alpha_3class", "fake_threshold", "macro_f1", "accuracy"])
+    # Macro F1 우선, 동률이면 accuracy 우선
+    best = result.sort_values(["macro_f1", "accuracy"], ascending=False).iloc[0]
+    return result, float(best["alpha_3class"]), float(best["fake_threshold"])
+
+
+def binary_metrics(y_true3: np.ndarray, p_fake: np.ndarray, threshold: float = 0.5):
+    from sklearn.metrics import f1_score, balanced_accuracy_score
+
+    y_true = (y_true3 != "real").astype(int)
+    y_pred = (p_fake >= threshold).astype(int)
+    return {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "f1": f1_score(y_true, y_pred, zero_division=0),
+        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
+        "auc": roc_auc_score(y_true, p_fake),
+    }
+
+
+def correction_table(df_test: pd.DataFrame, y_true, baseline_pred, refined_pred,
+                     proba3, p_fake_binary, p_fake_final):
+    out = df_test[["video_name"]].copy()
+    out["true_label"] = y_true
+    out["baseline_pred"] = baseline_pred
+    out["refined_pred"] = refined_pred
+    out["baseline_correct"] = out["true_label"] == out["baseline_pred"]
+    out["refined_correct"] = out["true_label"] == out["refined_pred"]
+    out["changed"] = out["baseline_pred"] != out["refined_pred"]
+    out["change_result"] = np.select(
+        [
+            (~out["baseline_correct"]) & out["refined_correct"],
+            out["baseline_correct"] & (~out["refined_correct"]),
+            out["changed"],
+        ],
+        ["fixed", "broken", "changed_still_wrong"],
+        default="unchanged",
+    )
+    for i, c in enumerate(CLASS_NAMES):
+        out[f"baseline_prob_{c}"] = proba3[:, i]
+    out["binary_prob_fake"] = p_fake_binary
+    out["refined_prob_fake"] = p_fake_final
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="real/diffusion/deepfake 3진 분류 (XGBoost + SHAP)")
     parser.add_argument("--csv", required=True, help="입력 CSV 경로 (unified_features_*.csv)")
@@ -699,6 +888,10 @@ def main():
                          help="test 영상 중 예시로 설명을 출력할 개수")
     parser.add_argument("--out-root", default="results", help="결과 디렉터리의 상위 경로")
     parser.add_argument("--log-out", default=None, help="학습 로그 txt 경로 (기본: 결과 폴더의 run_log.txt)")
+    parser.add_argument("--real-fake-refinement", action="store_true",
+                         help="SHAP 기반 Real/Fake 보조 분류기 + 확률 결합 refinement 적용")
+    parser.add_argument("--binary-features", choices=["shap8", "all10"], default="shap8",
+                         help="Real/Fake 보조모델 피처: shap8(기본) 또는 all10")
     args = parser.parse_args()
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -725,6 +918,9 @@ def _run(args, out_dir: Path, stamp: str):
 
     if args.remove_outliers:
         df = remove_outliers_iqr(df, FEATURE_COLS)
+
+    # NaN shortcut 여부는 학습 전 전체 분포와 함께 반드시 기록
+    print_nan_report(df, out_dir / "nan_rates_by_class.csv")
 
     y_all = df["group"].values
 
@@ -766,7 +962,7 @@ def _run(args, out_dir: Path, stamp: str):
             out_csv=str(out_dir / "misclassified_videos.csv"),
         )
 
-    print("\n=== train 데이터로 최종 모델 학습 ===")
+    print("\n=== train 데이터로 최종 3-class 모델 학습 ===")
     model_out = args.model_out or str(out_dir / "xgb_model_3class.joblib")
     model = train_final_model(
         X_train, y_train, CLASS_NAMES, model_out,
@@ -781,19 +977,19 @@ def _run(args, out_dir: Path, stamp: str):
     final_metrics_table = metrics_table(final_metrics)
     cv_metrics_table = metrics_table(cv_metrics)
 
-    print("\n=== test set 평가 ===")
+    print("\n=== Baseline 3-class test 평가 ===")
     print(final_metrics_table.round(4).to_string(index=False))
     clf_report = classification_report(
         y_test, y_pred, labels=DISPLAY_ORDER,
         target_names=[DISPLAY_LABEL[c] for c in DISPLAY_ORDER],
         digits=3, zero_division=0,
     )
-    print("\n=== Classification Report (test set) ===")
+    print("\n=== Baseline Classification Report ===")
     print(clf_report)
 
     per_class = per_class_table(y_test, y_pred)
     cm_df = save_confusion_matrix(y_test, y_pred, out_dir / "confusion_matrix.png")
-    print("=== Confusion Matrix (행=실제, 열=예측) ===")
+    print("=== Baseline Confusion Matrix (행=실제, 열=예측) ===")
     print(cm_df.to_string())
 
     final_metrics_table.to_csv(out_dir / "final_metrics.csv", index=False, encoding="utf-8-sig")
@@ -808,6 +1004,112 @@ def _run(args, out_dir: Path, stamp: str):
         pred_df[f"prob_{c}"] = proba[:, i]
     pred_df.to_csv(out_dir / "test_predictions.csv", index=False, encoding="utf-8-sig")
 
+    refined_metrics = None
+    if args.real_fake_refinement:
+        binary_cols = BINARY_SHAP_FEATURE_COLS if args.binary_features == "shap8" else FEATURE_COLS
+        print("\n=== Real/Fake refinement ===")
+        print(f"[Binary features: {args.binary_features}] {binary_cols}")
+        Xb_train = df_train[binary_cols].values.astype(float)
+        Xb_test = df_test[binary_cols].values.astype(float)
+        yb_train = (y_train != "real").astype(int)
+
+        print("[1/4] train OOF 3-class / Real-Fake 확률 생성")
+        oof_proba3 = get_multiclass_oof_proba(
+            X_train, y_train, n_splits=args.n_splits, random_state=args.random_state,
+            class_weight_multipliers=class_weight_multipliers,
+        )
+        oof_p_fake_binary = get_binary_oof_proba(
+            Xb_train, yb_train, n_splits=args.n_splits, random_state=args.random_state,
+        )
+        oof_bin = binary_metrics(y_train, oof_p_fake_binary, threshold=0.5)
+        print("\n=== train OOF Real/Fake 보조모델 ===")
+        print(f"Accuracy          : {oof_bin['accuracy']:.4f}")
+        print(f"F1                : {oof_bin['f1']:.4f}")
+        print(f"Balanced Accuracy : {oof_bin['balanced_accuracy']:.4f}")
+        print(f"AUC               : {oof_bin['auc']:.4f}")
+
+        print("[2/4] train OOF에서 결합 alpha / Fake threshold 자동 탐색")
+        search_df, best_alpha, best_threshold = tune_refinement(
+            y_train, oof_proba3, oof_p_fake_binary
+        )
+        search_df.to_csv(out_dir / "refinement_search.csv", index=False, encoding="utf-8-sig")
+        best_row = search_df.sort_values(["macro_f1", "accuracy"], ascending=False).iloc[0]
+        print(f"[선택] alpha_3class={best_alpha:.2f}, alpha_binary={1-best_alpha:.2f}, "
+              f"fake_threshold={best_threshold:.2f}")
+        print(f"[train OOF] refined Macro F1={best_row['macro_f1']:.4f}, "
+              f"Accuracy={best_row['accuracy']:.4f}")
+
+        print("[3/4] train 전체로 Real/Fake 최종 보조모델 학습")
+        binary_model = train_binary_model(
+            Xb_train, yb_train, out_dir / "xgb_model_real_fake.joblib",
+            binary_cols, random_state=args.random_state,
+        )
+
+        print("[4/4] 고정된 alpha/threshold로 test refinement 평가")
+        p_fake_binary_test = binary_model.predict_proba(Xb_test)[:, 1]
+        test_bin = binary_metrics(y_test, p_fake_binary_test, threshold=0.5)
+        print("\n=== Binary Real/Fake test (참고용 threshold=0.50) ===")
+        print(f"Accuracy          : {test_bin['accuracy']:.4f}")
+        print(f"F1                : {test_bin['f1']:.4f}")
+        print(f"Balanced Accuracy : {test_bin['balanced_accuracy']:.4f}")
+        print(f"AUC               : {test_bin['auc']:.4f}")
+
+        refined_pred, refined_proba, p_fake_final = make_refined_proba(
+            proba, p_fake_binary_test, best_alpha, best_threshold
+        )
+        refined_metrics = compute_metrics(y_test, refined_pred, refined_proba)
+        refined_metrics_table = metrics_table(refined_metrics)
+        print("\n=== Refined 3-class test 평가 ===")
+        print(refined_metrics_table.round(4).to_string(index=False))
+        refined_report = classification_report(
+            y_test, refined_pred, labels=DISPLAY_ORDER,
+            target_names=[DISPLAY_LABEL[c] for c in DISPLAY_ORDER],
+            digits=3, zero_division=0,
+        )
+        print("\n=== Refined Classification Report ===")
+        print(refined_report)
+        refined_cm = save_confusion_matrix(
+            y_test, refined_pred, out_dir / "confusion_matrix_refined.png"
+        )
+        print("=== Refined Confusion Matrix ===")
+        print(refined_cm.to_string())
+
+        refined_metrics_table.to_csv(out_dir / "refined_metrics.csv", index=False, encoding="utf-8-sig")
+        refined_cm.to_csv(out_dir / "confusion_matrix_refined.csv", encoding="utf-8-sig")
+        pd.DataFrame([test_bin]).to_csv(out_dir / "binary_real_fake_metrics.csv", index=False, encoding="utf-8-sig")
+
+        corrections = correction_table(
+            df_test, y_test, y_pred, refined_pred, proba, p_fake_binary_test, p_fake_final
+        )
+        corrections.to_csv(out_dir / "refinement_predictions.csv", index=False, encoding="utf-8-sig")
+        changed = corrections[corrections["changed"]]
+        changed.to_csv(out_dir / "refinement_changed_samples.csv", index=False, encoding="utf-8-sig")
+        fixed = int((corrections["change_result"] == "fixed").sum())
+        broken = int((corrections["change_result"] == "broken").sum())
+        print("\n=== Refinement 변화 요약 ===")
+        print(f"변경된 예측: {len(changed)}개")
+        print(f"오분류 -> 정답 교정: {fixed}개")
+        print(f"정답 -> 오분류 악화: {broken}개")
+        print(f"순 개선: {fixed - broken:+d}개")
+        print(f"Accuracy: {final_metrics['accuracy']:.4f} -> {refined_metrics['accuracy']:.4f} "
+              f"({refined_metrics['accuracy']-final_metrics['accuracy']:+.4f})")
+        print(f"Macro F1: {final_metrics['macro_f1']:.4f} -> {refined_metrics['macro_f1']:.4f} "
+              f"({refined_metrics['macro_f1']-final_metrics['macro_f1']:+.4f})")
+        print(f"Macro AUC: {final_metrics['macro_auc']:.4f} -> {refined_metrics['macro_auc']:.4f} "
+              f"({refined_metrics['macro_auc']-final_metrics['macro_auc']:+.4f})")
+
+        config_df = pd.DataFrame([{
+            "binary_feature_mode": args.binary_features,
+            "binary_features": ",".join(binary_cols),
+            "alpha_3class": best_alpha,
+            "alpha_binary": 1.0 - best_alpha,
+            "fake_threshold": best_threshold,
+            "train_oof_binary_auc": oof_bin["auc"],
+            "train_oof_refined_macro_f1": best_row["macro_f1"],
+        }])
+        config_df.to_csv(out_dir / "refinement_config.csv", index=False, encoding="utf-8-sig")
+
+    # 기존 SHAP 분석은 baseline 3-class 모델에 대해 유지
     shap_importance, shap_per_class, shap_class_plots = run_shap_analysis(
         model, X_test, FEATURE_COLS, out_dir
     )
@@ -857,6 +1159,9 @@ def _run(args, out_dir: Path, stamp: str):
 
     print("\n=== 요약 ===")
     print(ctx["summary_text"])
+    if refined_metrics is not None:
+        print(f"- Refinement test Accuracy: {final_metrics['accuracy']:.4f} -> {refined_metrics['accuracy']:.4f}")
+        print(f"- Refinement test Macro F1: {final_metrics['macro_f1']:.4f} -> {refined_metrics['macro_f1']:.4f}")
     print(f"\n[저장 완료] Markdown 보고서 -> {md_path.as_posix()}")
 
 

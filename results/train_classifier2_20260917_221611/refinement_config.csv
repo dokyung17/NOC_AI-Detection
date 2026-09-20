@@ -1,0 +1,2 @@
+﻿binary_feature_mode,binary_features,alpha_3class,alpha_binary,fake_threshold,train_oof_binary_auc,train_oof_refined_macro_f1
+shap8,"identity_sim_std,bvp_std,boundary_score_std,highfreq_score,patch_signal_std_mean,boundary_score_mean,d3_temporal_score,boundary_score_max",0.8,0.19999999999999996,0.46000000000000013,0.8726528647087144,0.7738697211302372
