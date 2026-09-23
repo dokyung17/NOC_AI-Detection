@@ -1,0 +1,345 @@
+[로드] results/unified_features_20260911_024351.csv
+[real 폴더] C:\Users\22dkw\Desktop\NOC_AI-Detection\data\videos\real -> 335개
+group
+deepfake     248
+diffusion    217
+real         335
+dtype: int64
+
+[데이터 분리] 전체 800개 -> train 640 / test 160
+train 3진: {'real': 268, 'deepfake': 198, 'diffusion': 174}
+train 1단계: {'fake': 372, 'real': 268}
+test  3진: {'real': 67, 'deepfake': 50, 'diffusion': 43}
+test  1단계: {'fake': 93, 'real': 67}
+
+=== train CV 튜닝 (피처 프리셋 × fake 가중치 × 임계값) ===
+기준: 최종 3진 Macro F1 (동점이면 Accuracy). test set은 사용하지 않는다.
+  preset=all                fake_w=1.0 | thr=0.50 macro_f1=0.7480
+  preset=all                fake_w=1.5 | thr=0.50 macro_f1=0.7466
+  preset=all                fake_w=2.0 | thr=0.50 macro_f1=0.7452
+  preset=phys_vs_face       fake_w=1.0 | thr=0.50 macro_f1=0.6323
+  preset=phys_vs_face       fake_w=1.5 | thr=0.50 macro_f1=0.6250
+  preset=phys_vs_face       fake_w=2.0 | thr=0.50 macro_f1=0.6193
+  preset=phys_id_vs_face    fake_w=1.0 | thr=0.50 macro_f1=0.7168
+  preset=phys_id_vs_face    fake_w=1.5 | thr=0.50 macro_f1=0.7156
+  preset=phys_id_vs_face    fake_w=2.0 | thr=0.50 macro_f1=0.7082
+  preset=phys_patch_vs_face fake_w=1.0 | thr=0.50 macro_f1=0.6476
+  preset=phys_patch_vs_face fake_w=1.5 | thr=0.50 macro_f1=0.6418
+  preset=phys_patch_vs_face fake_w=2.0 | thr=0.50 macro_f1=0.6348
+  preset=phys_vs_all        fake_w=1.0 | thr=0.50 macro_f1=0.6631
+  preset=phys_vs_all        fake_w=1.5 | thr=0.50 macro_f1=0.6583
+  preset=phys_vs_all        fake_w=2.0 | thr=0.50 macro_f1=0.6518
+  preset=all_vs_face        fake_w=1.0 | thr=0.50 macro_f1=0.7148
+  preset=all_vs_face        fake_w=1.5 | thr=0.50 macro_f1=0.7157
+  preset=all_vs_face        fake_w=2.0 | thr=0.50 macro_f1=0.7162
+  preset=all_vs_face_bvp    fake_w=1.0 | thr=0.50 macro_f1=0.7410
+  preset=all_vs_face_bvp    fake_w=1.5 | thr=0.50 macro_f1=0.7417
+  preset=all_vs_face_bvp    fake_w=2.0 | thr=0.50 macro_f1=0.7403
+  preset=top_split          fake_w=1.0 | thr=0.50 macro_f1=0.7578
+  preset=top_split          fake_w=1.5 | thr=0.50 macro_f1=0.7543
+  preset=top_split          fake_w=2.0 | thr=0.50 macro_f1=0.7573
+
+=== 튜닝 상위 15개 ===
+   preset  fake_weight  threshold  cv_macro_f1  cv_accuracy  cv_fake_recall
+top_split          1.0       0.45       0.7583       0.7562          0.8441
+top_split          1.0       0.50       0.7578       0.7562          0.8280
+top_split          2.0       0.50       0.7573       0.7547          0.8602
+top_split          1.5       0.50       0.7543       0.7516          0.8495
+top_split          1.0       0.40       0.7542       0.7516          0.8548
+top_split          1.0       0.30       0.7538       0.7516          0.8978
+top_split          1.0       0.55       0.7509       0.7500          0.7957
+top_split          2.0       0.55       0.7508       0.7484          0.8441
+      all          1.0       0.55       0.7504       0.7500          0.8333
+      all          1.0       0.45       0.7498       0.7484          0.8575
+      all          1.5       0.55       0.7497       0.7484          0.8522
+top_split          1.0       0.35       0.7497       0.7469          0.8710
+top_split          1.5       0.35       0.7493       0.7469          0.9059
+      all          1.0       0.40       0.7491       0.7484          0.8763
+top_split          1.5       0.55       0.7489       0.7469          0.8253
+
+[선택] preset=top_split, fake_weight=1.0, threshold=0.45 | CV Macro F1=0.7583, Acc=0.7562
+[튜닝 결과 저장] results\train_classifier2_hierarchical_20260922_225630\tuning_results.csv
+
+[계층적 분류] 1단계 real vs fake → 2단계 deepfake vs diffusion
+[프리셋] top_split
+[1단계 피처] ['identity_sim_std', 'bvp_std', 'highfreq_score', 'boundary_score_mean', 'boundary_score_std']
+[2단계 피처] ['bvp_std', 'identity_sim_std', 'boundary_score_std', 'boundary_score_mean', 'highfreq_score']
+[1단계 임계값] P(fake) >= 0.45 이면 2단계로 전달
+[클래스 가중치 배수] {'fake': 1.0}
+
+=== train 내부 5-fold 교차검증 ===
+  fold 1: stage1 acc=0.781 | stage2 oracle acc=0.932 | final acc=0.758
+  fold 2: stage1 acc=0.797 | stage2 oracle acc=0.920 | final acc=0.758
+  fold 3: stage1 acc=0.766 | stage2 oracle acc=0.933 | final acc=0.742
+  fold 4: stage1 acc=0.812 | stage2 oracle acc=0.865 | final acc=0.750
+  fold 5: stage1 acc=0.805 | stage2 oracle acc=0.919 | final acc=0.773
+
+=== train 내부 5-fold: 1단계 real vs fake ===
+            Metric  Score
+          Accuracy 0.7922
+   Macro Precision 0.7881
+      Macro Recall 0.7821
+          Macro F1 0.7845
+Weighted Precision 0.7912
+   Weighted Recall 0.7922
+       Weighted F1 0.7911
+           ROC AUC 0.8403
+              precision    recall  f1-score   support
+
+        Real      0.769     0.720     0.744       268
+        Fake      0.807     0.844     0.825       372
+
+    accuracy                          0.792       640
+   macro avg      0.788     0.782     0.784       640
+weighted avg      0.791     0.792     0.791       640
+
+=== train 내부 5-fold: 2단계 oracle (정답 fake만) ===
+            Metric  Score
+          Accuracy 0.9140
+   Macro Precision 0.9134
+      Macro Recall 0.9140
+          Macro F1 0.9137
+Weighted Precision 0.9141
+   Weighted Recall 0.9140
+       Weighted F1 0.9140
+           ROC AUC 0.9672
+              precision    recall  f1-score   support
+
+    Deepfake      0.923     0.914     0.919       198
+   Diffusion      0.903     0.914     0.909       174
+
+    accuracy                          0.914       372
+   macro avg      0.913     0.914     0.914       372
+weighted avg      0.914     0.914     0.914       372
+
+=== train 내부 5-fold: 최종 3진 (1단계 오류 포함) ===
+            Metric  Score
+          Accuracy 0.7562
+   Macro Precision 0.7550
+      Macro Recall 0.7632
+          Macro F1 0.7583
+Weighted Precision 0.7568
+   Weighted Recall 0.7562
+       Weighted F1 0.7557
+         Macro AUC 0.8899
+      Weighted AUC 0.8831
+              precision    recall  f1-score   support
+
+        Real      0.769     0.720     0.744       268
+    Deepfake      0.747     0.747     0.747       198
+   Diffusion      0.749     0.822     0.784       174
+
+    accuracy                          0.756       640
+   macro avg      0.755     0.763     0.758       640
+weighted avg      0.757     0.756     0.756       640
+
+
+=== train 데이터로 최종 1·2단계 모델 학습 ===
+[저장 완료] 계층적 최종 모델 -> results\train_classifier2_hierarchical_20260922_225630\xgb_model_hierarchical.joblib
+
+=== test set: 1단계 real vs fake ===
+            Metric  Score
+          Accuracy 0.8062
+   Macro Precision 0.8021
+      Macro Recall 0.7979
+          Macro F1 0.7997
+Weighted Precision 0.8055
+   Weighted Recall 0.8062
+       Weighted F1 0.8056
+           ROC AUC 0.8676
+              precision    recall  f1-score   support
+
+        Real      0.781     0.746     0.763        67
+        Fake      0.823     0.849     0.836        93
+
+    accuracy                          0.806       160
+   macro avg      0.802     0.798     0.800       160
+weighted avg      0.805     0.806     0.806       160
+
+=== test set: 2단계 oracle (정답 fake만) ===
+            Metric  Score
+          Accuracy 0.8817
+   Macro Precision 0.8933
+      Macro Recall 0.8753
+          Macro F1 0.8790
+Weighted Precision 0.8894
+   Weighted Recall 0.8817
+       Weighted F1 0.8803
+           ROC AUC 0.9312
+              precision    recall  f1-score   support
+
+    Deepfake      0.842     0.960     0.897        50
+   Diffusion      0.944     0.791     0.861        43
+
+    accuracy                          0.882        93
+   macro avg      0.893     0.875     0.879        93
+weighted avg      0.889     0.882     0.880        93
+
+=== test set: 2단계 given 1단계 (1단계가 fake로 맞춘 정답 fake만) ===
+            Metric  Score
+          Accuracy 0.9494
+   Macro Precision 0.9565
+      Macro Recall 0.9459
+          Macro F1 0.9487
+Weighted Precision 0.9538
+   Weighted Recall 0.9494
+       Weighted F1 0.9491
+           ROC AUC 0.9903
+=== test set: 최종 3진 ===
+            Metric  Score
+          Accuracy 0.7812
+   Macro Precision 0.7913
+      Macro Recall 0.7846
+          Macro F1 0.7853
+Weighted Precision 0.7868
+   Weighted Recall 0.7812
+       Weighted F1 0.7817
+         Macro AUC 0.8949
+      Weighted AUC 0.8917
+              precision    recall  f1-score   support
+
+        Real      0.781     0.746     0.763        67
+    Deepfake      0.724     0.840     0.778        50
+   Diffusion      0.868     0.767     0.815        43
+
+    accuracy                          0.781       160
+   macro avg      0.791     0.785     0.785       160
+weighted avg      0.787     0.781     0.782       160
+
+=== Confusion Matrix 1단계 ===
+      Real  Fake
+Real    50    17
+Fake    14    79
+=== Confusion Matrix 2단계 oracle ===
+           Deepfake  Diffusion
+Deepfake         48          2
+Diffusion         9         34
+=== Confusion Matrix 최종 3진 ===
+           Real  Deepfake  Diffusion
+Real         50        12          5
+Deepfake      8        42          0
+Diffusion     6         4         33
+
+=== test 오분류 원인 ===
+ source  count
+correct    125
+ stage1     31
+ stage2      4
+
+=== 세부 그룹(생성모델/기법)별 최종 정확도 ===
+                      n  accuracy
+subgroup                         
+deepfake(N_fake)      6     0.167
+sora                 16     0.688
+real(numeric)        47     0.702
+grok                  4     0.750
+kling                 8     0.750
+seedance              6     0.833
+real(id_pattern)     20     0.850
+id_id(faceswap)      24     0.875
+veo                   9     0.889
+faceforensics(__/~)  20     1.000
+
+=== 오분류 원인 (stage1=진위 실패, stage2=종류 실패) ===
+error_source
+correct    125
+stage1      31
+stage2       4
+
+[저장 완료] 오분류 영상 35개 -> results\train_classifier2_hierarchical_20260922_225630\misclassified_videos.csv
+
+=== 가장 '확신하며' 틀린 영상 top 10 ===
+       video_name         subgroup true_label pred_stage1 predicted error_source  confidence
+          936.mp4    real(numeric)       real        fake diffusion       stage1    0.986429
+          972.mp4    real(numeric)       real        fake diffusion       stage1    0.966589
+    Grok_0007.mp4             grok  diffusion        real      real       stage1    0.949359
+    sora_0004.mp4             sora  diffusion        real      real       stage1    0.896288
+        00084.mp4    real(numeric)       real        fake  deepfake       stage1    0.870528
+   kling_0020.mp4            kling  diffusion        real      real       stage1    0.851151
+    0001_fake.mp4 deepfake(N_fake)   deepfake        real      real       stage1    0.841573
+    sora_0052.mp4             sora  diffusion        real      real       stage1    0.825093
+          995.mp4    real(numeric)       real        fake diffusion       stage1    0.821488
+Seedance_0015.mp4         seedance  diffusion        real      real       stage1    0.820884
+
+=== SHAP Feature Importance (stage1) ===
+bvp_std                      1.2102
+identity_sim_std             1.0560
+highfreq_score               0.6153
+boundary_score_std           0.4263
+boundary_score_mean          0.3839
+
+=== SHAP Feature Importance (stage2) ===
+bvp_std                      1.7318
+identity_sim_std             1.1305
+boundary_score_std           1.0356
+boundary_score_mean          0.6578
+highfreq_score               0.5716
+
+=== test 예시 영상 3개에 대한 개별 설명 ===
+
+--- sora_0013.mp4 (실제 라벨: diffusion) ---
+
+예측: diffusion (결합 확률 94.4%)
+  [1단계] real 3.6% vs fake 96.4%  -> fake
+  [2단계 | fake] diffusion 97.9% vs deepfake 2.1%  (적용됨)
+  - 최종 P(real): 3.6%
+  - 최종 P(deepfake): 2.0%
+  - 최종 P(diffusion): 94.4%
+
+2단계(deepfake vs diffusion), deepfake 쪽 기여:
+  - boundary_score_std        값=6.1733   기여도=-2.2229
+  - identity_sim_std          값=0.0316   기여도=-0.5297
+  - bvp_std                   값=nan   기여도=-0.5143
+  - highfreq_score            값=0.0564   기여도=-0.4995
+  + boundary_score_mean       값=15.9662   기여도=+0.0153
+
+--- id0_id3_0004.mp4 (실제 라벨: deepfake) ---
+
+예측: deepfake (결합 확률 95.1%)
+  [1단계] real 4.6% vs fake 95.4%  -> fake
+  [2단계 | fake] diffusion 0.3% vs deepfake 99.7%  (적용됨)
+  - 최종 P(real): 4.6%
+  - 최종 P(deepfake): 95.1%
+  - 최종 P(diffusion): 0.3%
+
+2단계(deepfake vs diffusion), deepfake 쪽 기여:
+  + bvp_std                   값=0.1215   기여도=+2.4856
+  + boundary_score_std        값=2.9172   기여도=+1.6376
+  + identity_sim_std          값=0.0930   기여도=+1.1085
+  + boundary_score_mean       값=8.6773   기여도=+0.6807
+  - highfreq_score            값=0.1254   기여도=-0.1444
+
+--- sora_0045.mp4 (실제 라벨: diffusion) ---
+
+예측: diffusion (결합 확률 93.4%)
+  [1단계] real 5.0% vs fake 95.0%  -> fake
+  [2단계 | fake] diffusion 98.3% vs deepfake 1.7%  (적용됨)
+  - 최종 P(real): 5.0%
+  - 최종 P(deepfake): 1.6%
+  - 최종 P(diffusion): 93.4%
+
+2단계(deepfake vs diffusion), deepfake 쪽 기여:
+  - boundary_score_std        값=4.6032   기여도=-2.4488
+  - highfreq_score            값=0.0623   기여도=-1.2137
+  - bvp_std                   값=nan   기여도=-0.7203
+  + boundary_score_mean       값=7.5084   기여도=+0.6342
+  - identity_sim_std          값=0.0388   기여도=-0.2253
+
+=== 3진 모델과 test 성능 비교 ===
+         Metric  3-class  Hierarchical  Delta (hier - 3class)
+       Accuracy   0.7875        0.7812                -0.0062
+Macro Precision   0.7940        0.7913                -0.0027
+   Macro Recall   0.7902        0.7846                -0.0056
+       Macro F1   0.7894        0.7853                -0.0041
+    Weighted F1   0.7866        0.7817                -0.0049
+      Macro AUC   0.9058        0.8949                -0.0109
+
+=== 요약 ===
+- 1단계 feature 5개, 2단계 feature 5개, P(fake) 임계값 0.45 로 train 640 / test 160 를 사용했다.
+- 1단계(real vs fake) test Accuracy 0.8063, Macro F1 0.7997, ROC AUC 0.8676.
+- 2단계 oracle(정답 fake만) test Accuracy 0.8817, Macro F1 0.8790, ROC AUC 0.9312.
+- 최종 3진 test Accuracy 0.7812, Macro F1 0.7853, Macro AUC 0.8949.
+- test 오분류 중 1단계(진위) 실패 31개, 2단계(종류) 실패 4개.
+- SHAP 1단계 최상위 feature 는 `bvp_std` (mean |SHAP| = 1.2102), 2단계는 `bvp_std` (mean |SHAP| = 1.7318) 였다.
+
+[저장 완료] Markdown 보고서 -> results/train_classifier2_hierarchical_20260922_225630/train_classifier2_hierarchical_results.md
